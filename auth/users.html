@@ -96,7 +96,11 @@
       </svg>
       AtraOps
     </span>
-    <span><a href="/">Back to app</a></span>
+    <span>
+      <a href="/">Back to app</a>
+      <span style="color:var(--text-dim);margin:0 .6rem">·</span>
+      <a href="#" id="signout">Sign out</a>
+    </span>
   </header>
 
   <main class="main">
@@ -211,6 +215,12 @@
 
   document.getElementById("suggest").addEventListener("click", function () {
     createForm.elements.password.value = randomPassword();
+  });
+
+  document.getElementById("signout").addEventListener("click", function (e) {
+    e.preventDefault();
+    function leave() { window.location.href = "/login"; }
+    fetch("/api/logout", { method: "POST", credentials: "same-origin" }).then(leave, leave);
   });
 
   function loadStats() {

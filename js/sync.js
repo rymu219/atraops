@@ -126,6 +126,72 @@
     console.info("[sync] editor mode — changes publish to the server");
   }
 
+  /* ---------- account bar ---------- */
+
+  /**
+   * Adds who-you-are and a sign-out button to the existing topbar.
+   *
+   * Injected at runtime rather than written into index.html, so the markup
+   * stays as Ben and Grok left it and their edits can't collide with this.
+   */
+  function installAccountBar(me) {
+    var right = document.querySelector(".topbar-right");
+    if (!right || document.getElementById("sync-signout")) return;
+
+    var style = document.createElement("style");
+    style.textContent =
+      ".sync-who{display:inline-block;max-width:16ch;overflow:hidden;text-overflow:ellipsis;" +
+      "white-space:nowrap;font-size:.78rem;font-weight:500;color:var(--text-muted);" +
+      "vertical-align:middle}" +
+      ".sync-who b{display:block;font-size:.62rem;font-weight:650;letter-spacing:.04em;" +
+      "text-transform:uppercase;color:var(--text-dim)}";
+    document.head.appendChild(style);
+
+    var who = document.createElement("span");
+    who.className = "sync-who";
+    who.title = me.email + " — " + me.role;
+    who.innerHTML = "<b></b>";
+    who.firstChild.textContent = me.role === "editor" ? "Editor" : "Viewer";
+    who.appendChild(document.createTextNode(me.email));
+
+    var out = document.createElement("button");
+    out.type = "button";
+    out.id = "sync-signout";
+    out.className = "btn btn-icon";
+    out.title = "Sign out";
+    out.setAttribute("aria-label", "Sign out");
+    out.innerHTML =
+      '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" aria-hidden="true">' +
+      '<path d="M15 17l5-5-5-5M20 12H9M12 3H6a2 2 0 00-2 2v14a2 2 0 002 2h6" ' +
+      'stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+    out.addEventListener("click", function () {
+      out.disabled = true;
+      /* Land on the login page either way — a failed logout call shouldn't
+         strand someone on a page they're trying to leave. */
+      function leave() {
+        window.location.href = "/login";
+      }
+      fetch("/api/logout", { method: "POST", credentials: "same-origin" }).then(leave, leave);
+    });
+
+    right.insertBefore(who, right.firstChild);
+    right.appendChild(out);
+
+    if (me.role === "editor") {
+      var manage = document.createElement("a");
+      manage.href = "/users";
+      manage.className = "btn btn-icon";
+      manage.title = "Accounts, backup and demo data";
+      manage.setAttribute("aria-label", "Accounts");
+      manage.innerHTML =
+        '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" aria-hidden="true">' +
+        '<path d="M16 21v-2a4 4 0 00-4-4H6a4 4 0 00-4 4v2M9 11a4 4 0 100-8 4 4 0 000 8z' +
+        'M22 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75" ' +
+        'stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+      right.insertBefore(manage, out);
+    }
+  }
+
   /* ---------- boot ---------- */
 
   function startApp(afterBoot) {
@@ -167,11 +233,12 @@
   }
 
   function boot() {
-    var editor = false;
+    var account = null;
 
     function run() {
       startApp(function () {
-        if (editor) enableEditorSync();
+        if (account) installAccountBar(account);
+        if (account && account.role === "editor") enableEditorSync();
       });
     }
 
@@ -185,7 +252,7 @@
         return null;
       })
       .then(function (me) {
-        editor = !!(me && me.role === "editor");
+        account = me;
         return seed();
       })
       .then(run, run);
