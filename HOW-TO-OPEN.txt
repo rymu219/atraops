@@ -1,0 +1,38 @@
+﻿# AtraOps — Share Package (D:\AtraOps-Export)
+
+This folder has everything needed to open AtraOps on another computer **with your data**.
+
+## Contents
+
+| Item | Purpose |
+|------|---------|
+| `index.html` + `css\` + `js\` | The AtraOps app (open in Edge or Chrome) |
+| `OPEN-AtraOps.bat` | Double-click to open the app |
+| `AtraOps-backend-LATEST.json` | **Your live data** (serials, ELs, DTs, documents, masters) |
+| `DATA\AtraOps-backend-LIVE.json` | Same data (backup copy) |
+| `AtraOps-backend-YYYYMMDD-….json` | Timestamped export copy |
+
+## On the other computer
+
+1. Copy this whole folder (or the zip) to their PC, e.g.  
+   `C:\Users\<them>\Documents\AtraOps`
+2. Double-click **`OPEN-AtraOps.bat`** (or open `index.html` in Edge/Chrome)
+3. Go to **Admin** → login:
+   - Username: `admin`
+   - Password: `admin123`
+4. Click **Import Backend JSON**
+5. Choose **`AtraOps-backend-LATEST.json`** (or the file in `DATA\`)
+6. Confirm replace → done
+
+They will see your serials, master lists, equipment lists, delivery tickets, documents, etc.
+
+## Important
+
+- The **code** alone is not enough — they must **import the JSON** once.
+- Data lives in the browser after import (localStorage). Each computer keeps its own copy after that.
+- Prefer the same browser (Edge or Chrome) for day-to-day use so data stays in one place.
+
+## Demo login
+
+- Username: `admin`
+- Password: `admin123`
