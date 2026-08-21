@@ -1,6 +1,11 @@
 /**
  * AtraOps — server state sync.
  *
+ * The database is where the data lives. This fills the browser's localStorage
+ * from it on load and pushes editor changes back, because app.js reads and
+ * writes localStorage synchronously in ~80 places and can't talk to Postgres
+ * itself. The browser copy is a cache, never a source.
+ *
  * Loads BEFORE app.js and deliberately boots it by hand at the end, because
  * the server copy has to be in localStorage before app.js reads it.
  *
@@ -123,9 +128,16 @@
 
   /* ---------- boot ---------- */
 
-  function startApp() {
+  function startApp(afterBoot) {
     var s = document.createElement("script");
     s.src = APP_SRC;
+    /* Wait until app.js has finished its own startup before listening for
+       writes. app.js generates demo records when it finds empty storage, and
+       those must never be mistaken for something a person typed and published
+       over the real dataset. */
+    s.onload = s.onerror = function () {
+      setTimeout(afterBoot, 0);
+    };
     document.body.appendChild(s);
   }
 
@@ -148,12 +160,21 @@
         }
       })
       .catch(function () {
-        /* Offline, or opened straight off disk — app.js falls back to the
-           embedded recovered-data.js seed on its own. */
+        /* Offline or unreachable. The app starts empty rather than falling
+           back to an embedded snapshot — better a visibly empty screen than
+           stale data that looks live and gets published over the real set. */
       });
   }
 
   function boot() {
+    var editor = false;
+
+    function run() {
+      startApp(function () {
+        if (editor) enableEditorSync();
+      });
+    }
+
     /* Role comes from the session cookie, so nothing sensitive lives in the
        browser and revoking an account takes effect immediately. */
     fetch("/api/me", { headers: { Accept: "application/json" }, credentials: "same-origin" })
@@ -164,10 +185,10 @@
         return null;
       })
       .then(function (me) {
-        if (me && me.role === "editor") enableEditorSync();
+        editor = !!(me && me.role === "editor");
         return seed();
       })
-      .then(startApp, startApp);
+      .then(run, run);
   }
 
   boot();

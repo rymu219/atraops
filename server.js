@@ -75,30 +75,20 @@ async function initDb() {
   await auth.schema(pool);
   await auth.bootstrap(pool, BOOTSTRAP_EMAIL, BOOTSTRAP_PASSWORD);
   dbReady = true;
-  console.log("[atraops] database ready");
-  try {
-    const result = await seedState(false);
-    if (result.seeded) console.log(`[atraops] seeded ${result.seeded} keys from the published export`);
-  } catch (err) {
-    console.error("[atraops] seed failed", err);
-  }
+  const { rows } = await pool.query("SELECT count(*)::int AS n FROM app_state");
+  console.log(`[atraops] database ready — ${rows[0].n} state keys stored`);
 }
 
 /**
- * Loads the published dataset from the backend export committed alongside the
- * code. The export is never served to browsers — it's read here, server-side —
- * so the live dataset can always be rebuilt from the repo rather than
- * depending on whatever happened to be in someone's browser first.
+ * Loads the dataset from the backend export committed alongside the code.
  *
- * Runs automatically on an empty database; `force` re-publishes over whatever
- * is already stored.
+ * This NEVER runs on its own. The database is the home of the live data, and
+ * nothing is allowed to overwrite or resurrect it automatically — an empty
+ * database stays empty until a person decides otherwise. This exists only for
+ * the initial load, and for deliberately resetting the demo from /users.
  */
-async function seedState(force) {
+async function seedState() {
   if (!fs.existsSync(SEED_FILE)) return { seeded: 0, reason: "no export file in the repo" };
-  if (!force) {
-    const { rows } = await pool.query("SELECT count(*)::int AS n FROM app_state");
-    if (rows[0].n > 0) return { seeded: 0, reason: "already populated" };
-  }
   /* The export was written by a Windows browser and carries a BOM. */
   const pkg = JSON.parse(fs.readFileSync(SEED_FILE, "utf8").replace(/^\uFEFF/, ""));
   const data = pkg.data || {};
@@ -251,7 +241,7 @@ app.delete("/api/state/:key", requireDb, requireEditor, async (req, res) => {
 
 app.post("/api/seed", requireDb, requireEditor, async (req, res) => {
   try {
-    const result = await seedState(true);
+    const result = await seedState();
     res.json({ ok: true, ...result });
   } catch (err) {
     console.error("[atraops] reseed failed", err);
