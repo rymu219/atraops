@@ -139,6 +139,18 @@
     </section>
 
     <section class="panel">
+      <div class="panel-header">Demo data</div>
+      <div class="panel-body">
+        <p class="subtitle" style="margin-bottom:1rem">
+          Republishes the dataset from the backend export committed with the code,
+          replacing what everyone currently sees. Your own browser is reset
+          afterwards so you're looking at the same thing they are.
+        </p>
+        <button type="button" class="btn btn-secondary" id="reseed">Republish demo data</button>
+      </div>
+    </section>
+
+    <section class="panel">
       <div class="panel-header">Existing accounts</div>
       <table>
         <thead>
@@ -184,6 +196,24 @@
 
   document.getElementById("suggest").addEventListener("click", function () {
     createForm.elements.password.value = randomPassword();
+  });
+
+  document.getElementById("reseed").addEventListener("click", function () {
+    if (!confirm("Republish the demo data from the committed export?\n\nThis replaces the dataset everyone sees.")) return;
+    var btn = this;
+    btn.disabled = true;
+    btn.textContent = "Republishing…";
+    api("/api/seed", { method: "POST" })
+      .then(function (d) {
+        done("Published " + d.seeded + " keys (export from " + (d.exportedAt || "unknown date") + "). Reloading your copy…");
+        /* Clear this browser's stale copy so it pulls the newly published set. */
+        setTimeout(function () { window.location.href = "/?reset=1"; }, 1800);
+      })
+      .catch(function (e) {
+        fail(e.message);
+        btn.disabled = false;
+        btn.textContent = "Republish demo data";
+      });
   });
 
   function render(users) {

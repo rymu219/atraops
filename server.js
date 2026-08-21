@@ -26,6 +26,7 @@
  */
 import express from "express";
 import pg from "pg";
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import * as auth from "./auth.js";
@@ -42,6 +43,7 @@ const SECURE_COOKIES = process.env.NODE_ENV !== "development";
 const BODY_LIMIT = "32mb";
 const KEY_PATTERN = /^fieldops-[A-Za-z0-9_-]{1,64}$/;
 const MIN_PASSWORD = 10;
+const SEED_FILE = path.join(__dirname, "AtraOps-backend-LATEST.json");
 
 const app = express();
 app.disable("x-powered-by");
@@ -74,6 +76,46 @@ async function initDb() {
   await auth.bootstrap(pool, BOOTSTRAP_EMAIL, BOOTSTRAP_PASSWORD);
   dbReady = true;
   console.log("[atraops] database ready");
+  try {
+    const result = await seedState(false);
+    if (result.seeded) console.log(`[atraops] seeded ${result.seeded} keys from the published export`);
+  } catch (err) {
+    console.error("[atraops] seed failed", err);
+  }
+}
+
+/**
+ * Loads the published dataset from the backend export committed alongside the
+ * code. The export is never served to browsers — it's read here, server-side —
+ * so the live dataset can always be rebuilt from the repo rather than
+ * depending on whatever happened to be in someone's browser first.
+ *
+ * Runs automatically on an empty database; `force` re-publishes over whatever
+ * is already stored.
+ */
+async function seedState(force) {
+  if (!fs.existsSync(SEED_FILE)) return { seeded: 0, reason: "no export file in the repo" };
+  if (!force) {
+    const { rows } = await pool.query("SELECT count(*)::int AS n FROM app_state");
+    if (rows[0].n > 0) return { seeded: 0, reason: "already populated" };
+  }
+  /* The export was written by a Windows browser and carries a BOM. */
+  const pkg = JSON.parse(fs.readFileSync(SEED_FILE, "utf8").replace(/^\uFEFF/, ""));
+  const data = pkg.data || {};
+  const keys = pkg.keys && pkg.keys.length ? pkg.keys : Object.keys(data);
+  let seeded = 0;
+  for (const key of keys) {
+    if (!KEY_PATTERN.test(key)) continue;
+    const value = data[key];
+    if (value === null || value === undefined) continue;
+    await pool.query(
+      `INSERT INTO app_state (key, value, updated_at) VALUES ($1, $2, now())
+       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`,
+      [key, JSON.stringify(value)]
+    );
+    seeded++;
+  }
+  return { seeded, exportedAt: pkg.exportedAt };
 }
 
 /* ---------- middleware ---------- */
@@ -204,6 +246,16 @@ app.delete("/api/state/:key", requireDb, requireEditor, async (req, res) => {
   } catch (err) {
     console.error("[atraops] state delete failed", key, err);
     res.status(500).json({ error: "delete failed" });
+  }
+});
+
+app.post("/api/seed", requireDb, requireEditor, async (req, res) => {
+  try {
+    const result = await seedState(true);
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    console.error("[atraops] reseed failed", err);
+    res.status(500).json({ error: "reseed failed: " + err.message });
   }
 });
 
