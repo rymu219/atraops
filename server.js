@@ -239,6 +239,54 @@ app.delete("/api/state/:key", requireDb, requireEditor, async (req, res) => {
   }
 });
 
+/** Cheap overview of what's stored, without shipping the whole dataset. */
+app.get("/api/state/summary", requireDb, requireEditor, async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT count(*)::int AS keys,
+              coalesce(sum(pg_column_size(value)), 0)::bigint AS bytes,
+              max(updated_at) AS updated_at
+         FROM app_state`
+    );
+    res.json(rows[0]);
+  } catch (err) {
+    console.error("[atraops] summary failed", err);
+    res.status(500).json({ error: "summary failed" });
+  }
+});
+
+/**
+ * Downloads everything in the database as a backup file.
+ *
+ * Deliberately written in the same shape as the committed export, so a
+ * downloaded backup can be dropped in as AtraOps-backend-LATEST.json and
+ * become the new starting point — or imported through Admin like any other
+ * backend export. One format, three uses.
+ */
+app.get("/api/export", requireDb, requireEditor, async (req, res) => {
+  try {
+    const { rows } = await pool.query("SELECT key, value FROM app_state ORDER BY key");
+    const data = {};
+    for (const row of rows) data[row.key] = row.value;
+    const now = new Date();
+    const pkg = {
+      app: "AtraOps",
+      version: 2,
+      exportedAt: now.toISOString(),
+      source: "database",
+      keys: Object.keys(data),
+      data,
+    };
+    const stamp = now.toISOString().slice(0, 19).replace(/[:T]/g, "-");
+    res.set("Content-Type", "application/json");
+    res.set("Content-Disposition", `attachment; filename="AtraOps-backend-${stamp}.json"`);
+    res.send(JSON.stringify(pkg, null, 2));
+  } catch (err) {
+    console.error("[atraops] export failed", err);
+    res.status(500).json({ error: "export failed" });
+  }
+});
+
 app.post("/api/seed", requireDb, requireEditor, async (req, res) => {
   try {
     const result = await seedState();

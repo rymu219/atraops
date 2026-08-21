@@ -139,12 +139,27 @@
     </section>
 
     <section class="panel">
-      <div class="panel-header">Demo data</div>
+      <div class="panel-header">Back up the data</div>
       <div class="panel-body">
         <p class="subtitle" style="margin-bottom:1rem">
-          Republishes the dataset from the backend export committed with the code,
-          replacing what everyone currently sees. Your own browser is reset
-          afterwards so you're looking at the same thing they are.
+          The database is the only copy of what Ben has built. This downloads all
+          of it as a single file. Keep it somewhere safe — and to make it the new
+          starting point, commit it to the repo as
+          <code class="mono">AtraOps-backend-LATEST.json</code>.
+        </p>
+        <a class="btn btn-primary" href="/api/export" download>Download backup</a>
+        <span class="subtitle" id="stats" style="margin-left:.85rem"></span>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-header">Reset the demo</div>
+      <div class="panel-body">
+        <p class="subtitle" style="margin-bottom:1rem">
+          Republishes the dataset from the export committed with the code,
+          <strong>replacing whatever is in the database now</strong>. Back up first
+          if Ben has added anything worth keeping. Your own browser is reset
+          afterwards so you see what everyone else does.
         </p>
         <button type="button" class="btn btn-secondary" id="reseed">Republish demo data</button>
       </div>
@@ -197,6 +212,17 @@
   document.getElementById("suggest").addEventListener("click", function () {
     createForm.elements.password.value = randomPassword();
   });
+
+  function loadStats() {
+    api("/api/state/summary")
+      .then(function (s) {
+        var mb = (Number(s.bytes) / 1048576).toFixed(1);
+        var when = s.updated_at ? new Date(s.updated_at).toLocaleString() : "never";
+        document.getElementById("stats").textContent =
+          s.keys + " keys · " + mb + " MB · last changed " + when;
+      })
+      .catch(function () {});
+  }
 
   document.getElementById("reseed").addEventListener("click", function () {
     if (!confirm("Republish the demo data from the committed export?\n\nThis replaces the dataset everyone sees.")) return;
@@ -299,6 +325,7 @@
   });
 
   load();
+  loadStats();
 </script>
 </body>
 </html>
