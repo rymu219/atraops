@@ -9,15 +9,15 @@
  * Loads BEFORE app.js and deliberately boots it by hand at the end, because
  * the server copy has to be in localStorage before app.js reads it.
  *
- * Two roles share this file:
+ * Two roles share this file, decided by the session cookie:
  *
- *   Visitors (no token) — seed their browser from the server once, then work
- *   entirely locally. Nothing they do is uploaded, so every demo starts from
- *   the same clean dataset no matter what the last person clicked.
+ *   Viewers — seed their browser from the server once, then work entirely
+ *   locally. Nothing they do is uploaded, so every demo starts from the same
+ *   clean dataset no matter what the last person clicked.
  *
- *   The editor (token in the URL) — same seeding, but every save is also
- *   pushed to the server, so typing into the site is all it takes to update
- *   what visitors see. No export step.
+ *   Editors — same seeding, but every save is also pushed to the server, so
+ *   typing into the site is all it takes to update what viewers see. No
+ *   export step.
  *
  * app.js is untouched by design: this wraps localStorage.setItem instead, so
  * ongoing edits to app.js can't collide with the sync layer.
@@ -132,7 +132,7 @@
    * Adds who-you-are and a sign-out button to the existing topbar.
    *
    * Injected at runtime rather than written into index.html, so the markup
-   * stays as Ben and Grok left it and their edits can't collide with this.
+   * stays as the app authors left it and their edits can't collide with this.
    */
   function installAccountBar(me) {
     var right = document.querySelector(".topbar-right");
@@ -207,9 +207,30 @@
     document.body.appendChild(s);
   }
 
+  /**
+   * Drops reset=1 from the address bar once it has been acted on.
+   *
+   * Without this, bookmarking or refreshing the reset link would wipe local
+   * storage on every single visit. It is a one-shot instruction, so it should
+   * not survive in the URL.
+   */
+  function stripResetParam() {
+    try {
+      var url = new URL(window.location.href);
+      url.searchParams.delete("reset");
+      var qs = url.searchParams.toString();
+      history.replaceState(null, "", url.pathname + (qs ? "?" + qs : "") + url.hash);
+    } catch (e) {
+      /* Old browser without URL(); leaving the parameter is harmless. */
+    }
+  }
+
   function seed() {
     var forceReset = /[?&]reset=1/.test(window.location.search);
-    if (forceReset) clearLocalData();
+    if (forceReset) {
+      clearLocalData();
+      stripResetParam();
+    }
 
     /* Returning users keep their own sandbox; only a fresh or reset browser
        pulls the published dataset. */

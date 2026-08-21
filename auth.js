@@ -7,7 +7,7 @@
  * actually revokes their access instead of waiting for an expiry.
  *
  * Two roles:
- *   editor — can change the published dataset and manage users (you, Ben)
+ *   editor — can change the published dataset and manage accounts
  *   viewer — can open the demo; their edits stay in their own browser
  */
 import crypto from "node:crypto";
