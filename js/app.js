@@ -5117,6 +5117,119 @@
     return st !== "Completed" && st !== "Closed";
   }
 
+  /* ========================================================================
+   * BROWSER HISTORY
+   *
+   * Every screen change funnels through navigate(), so that is the only place
+   * the History API has to hook into. Each navigation pushes an entry whose
+   * address is a readable hash ("#jobs-detail?id=J-1041") and whose history
+   * state carries the full params object, so the browser Back button walks
+   * back through the screens the person actually visited instead of leaving
+   * the app on the first press.
+   *
+   * The hash is used rather than a real path because the app is also opened
+   * straight off the file system (see HOW-TO-OPEN.txt), where a pushed path
+   * would 404 on reload.
+   * ======================================================================== */
+
+  var HISTORY_APP = "atraops";
+  var canPushState = !!(window.history && window.history.pushState);
+  /* Set while a Back/Forward press is being replayed, so replaying a screen
+     does not push a fresh entry on top of the one being returned to. */
+  var restoringHistory = false;
+
+  function routeHash(name, params) {
+    var qs = [];
+    Object.keys(params || {}).forEach(function (k) {
+      var v = params[k];
+      /* Only scalars go in the address bar; the history state keeps the rest. */
+      if (v === null || v === undefined || typeof v === "object" || typeof v === "function") return;
+      qs.push(encodeURIComponent(k) + "=" + encodeURIComponent(String(v)));
+    });
+    return "#" + name + (qs.length ? "?" + qs.join("&") : "");
+  }
+
+  function parseRouteHash(hash) {
+    var raw = String(hash || "").replace(/^#/, "");
+    if (!raw) return null;
+    var parts = raw.split("?");
+    var name = decodeURIComponent(parts[0] || "");
+    if (!name || !routes[name]) return null;
+    var params = {};
+    if (parts[1]) {
+      parts[1].split("&").forEach(function (pair) {
+        if (!pair) return;
+        var kv = pair.split("=");
+        var k = decodeURIComponent(kv[0] || "");
+        if (k) params[k] = decodeURIComponent(kv[1] || "");
+      });
+    }
+    return { route: name, params: params };
+  }
+
+  function routeSignature(name, params) {
+    try {
+      return name + "|" + JSON.stringify(params || {});
+    } catch (e) {
+      return String(name);
+    }
+  }
+
+  function recordHistory(name, params, replace) {
+    if (!canPushState) return;
+    var entry = { app: HISTORY_APP, route: name, params: params || {} };
+    var url = routeHash(name, params);
+    var current = window.history.state;
+    /* Re-opening the screen you are already on should not add a step that has
+       to be pressed through on the way back. */
+    var repeat =
+      current &&
+      current.app === HISTORY_APP &&
+      routeSignature(current.route, current.params) === routeSignature(name, params);
+    try {
+      if (replace || repeat) window.history.replaceState(entry, "", url);
+      else window.history.pushState(entry, "", url);
+    } catch (e) {
+      /* Browsers that refuse pushState (older file:// handling) still get a
+         working Back button through the hash alone. */
+      try {
+        if (!replace && !repeat) window.location.hash = url;
+      } catch (e2) {}
+    }
+  }
+
+  function applyHistoryEntry(entry) {
+    var target = null;
+    var fromEntry = false;
+    if (entry && entry.app === HISTORY_APP && entry.route && routes[entry.route]) {
+      target = { route: entry.route, params: entry.params || {} };
+      fromEntry = true;
+    }
+    if (!target) target = parseRouteHash(window.location.hash);
+    if (!target) target = { route: "home", params: {} };
+    /* popstate and hashchange both fire for a single press; the second one is
+       already on the right screen and does nothing. */
+    if (routeSignature(target.route, target.params) !== routeSignature(state.route, state.params)) {
+      restoringHistory = true;
+      try {
+        navigate(target.route, target.params);
+      } finally {
+        restoringHistory = false;
+      }
+    }
+    /* An entry reached by a typed or edited address carries no state of its
+       own. Stamping the screen that was actually opened onto it keeps the
+       address bar honest and makes that entry replay exactly next time. */
+    if (!fromEntry) recordHistory(state.route, state.params, true);
+  }
+
+  window.addEventListener("popstate", function (e) {
+    applyHistoryEntry(e.state);
+  });
+  window.addEventListener("hashchange", function () {
+    applyHistoryEntry(window.history.state);
+  });
+
   function navigate(route, params) {
     if (!route) route = "home";
     var parts = String(route).split("?");
@@ -5157,8 +5270,10 @@
     }
     state.route = name;
     state.params = p;
-    render();
+    var ok = render();
     window.scrollTo(0, 0);
+    if (!restoringHistory) recordHistory(name, p, false);
+    return ok;
   }
 
   /* ========================================================================
@@ -5207,11 +5322,13 @@
 
   function render() {
     var main = $("#main");
-    if (!main) return;
+    if (!main) return false;
     var fn = routes[state.route] || viewHome;
+    var ok = true;
     try {
       fn(main);
     } catch (err) {
+      ok = false;
       console.error(err);
       main.innerHTML =
         '<div class="panel panel-body"><h2>Render error</h2><pre class="mono">' +
@@ -5219,6 +5336,7 @@
         "</pre></div>";
     }
     updateClock();
+    return ok;
   }
 
   /* ========================================================================
@@ -17708,7 +17826,18 @@
     bindChrome();
     setInterval(updateClock, 30000);
     updateClock();
-    navigate("home");
+    /* A reload or a shared link lands on the screen named in the address bar.
+       Screens built from an in-memory search have nothing left to show after a
+       reload, so a failed render falls back to home rather than stranding the
+       person on a broken page. */
+    restoringHistory = true;
+    try {
+      var start = parseRouteHash(window.location.hash);
+      if (!start || navigate(start.route, start.params) === false) navigate("home");
+    } finally {
+      restoringHistory = false;
+    }
+    recordHistory(state.route, state.params, true);
     try {
       var elCount = (storageGet(KEYS.equipmentLists, []) || []).length;
       var asCount = (storageGet(KEYS.assets, []) || []).length;
