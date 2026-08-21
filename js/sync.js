@@ -21,7 +21,6 @@
   "use strict";
 
   var API = "/api/state";
-  var TOKEN_KEY = "atraops-editor-token"; /* not fieldops-*, so it never syncs */
   var APP_SRC = "js/app.js?v=20260818-score-apply-config";
   var FLUSH_DELAY = 1500;
   var PREFIX = "fieldops-";
@@ -29,29 +28,7 @@
   var nativeSetItem = window.localStorage.setItem.bind(window.localStorage);
   var dirty = Object.create(null);
   var flushTimer = null;
-
-  /* ---------- editor token ---------- */
-
-  function readToken() {
-    var m = /[#&]editor=([^&]+)/.exec(window.location.hash || "");
-    if (m) {
-      var t = decodeURIComponent(m[1]);
-      try {
-        nativeSetItem(TOKEN_KEY, t);
-      } catch (e) {}
-      /* Strip it from the address bar so it isn't shouldered or pasted around. */
-      history.replaceState(null, "", window.location.pathname + window.location.search);
-      return t;
-    }
-    try {
-      return window.localStorage.getItem(TOKEN_KEY) || "";
-    } catch (e) {
-      return "";
-    }
-  }
-
-  var token = readToken();
-  var isEditor = !!token;
+  var isEditor = false;
 
   /* ---------- seeding ---------- */
 
@@ -118,7 +95,8 @@
       }
       fetch(API + "/" + encodeURIComponent(key), {
         method: "PUT",
-        headers: { "Content-Type": "application/json", "X-Editor-Token": token },
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
         body: JSON.stringify({ value: value }),
       }).catch(function (err) {
         console.warn("[sync] push failed", key, err);
@@ -126,7 +104,8 @@
     });
   }
 
-  if (isEditor) {
+  function enableEditorSync() {
+    isEditor = true;
     window.localStorage.setItem = function (key, value) {
       var result = nativeSetItem(key, value);
       if (typeof key === "string" && key.indexOf(PREFIX) === 0) queue(key);
@@ -139,6 +118,7 @@
         flush();
       }
     });
+    console.info("[sync] editor mode — changes publish to the server");
   }
 
   /* ---------- boot ---------- */
@@ -149,15 +129,15 @@
     document.body.appendChild(s);
   }
 
-  function boot() {
+  function seed() {
     var forceReset = /[?&]reset=1/.test(window.location.search);
     if (forceReset) clearLocalData();
 
-    /* Returning visitors keep their own sandbox; only a fresh or reset
-       browser pulls the published dataset. */
-    if (!forceReset && hasLocalData()) return startApp();
+    /* Returning users keep their own sandbox; only a fresh or reset browser
+       pulls the published dataset. */
+    if (!forceReset && hasLocalData()) return Promise.resolve();
 
-    fetch(API, { headers: { Accept: "application/json" } })
+    return fetch(API, { headers: { Accept: "application/json" }, credentials: "same-origin" })
       .then(function (r) {
         return r.ok ? r.json() : null;
       })
@@ -170,10 +150,25 @@
       .catch(function () {
         /* Offline, or opened straight off disk — app.js falls back to the
            embedded recovered-data.js seed on its own. */
+      });
+  }
+
+  function boot() {
+    /* Role comes from the session cookie, so nothing sensitive lives in the
+       browser and revoking an account takes effect immediately. */
+    fetch("/api/me", { headers: { Accept: "application/json" }, credentials: "same-origin" })
+      .then(function (r) {
+        return r.ok ? r.json() : null;
+      })
+      .catch(function () {
+        return null;
+      })
+      .then(function (me) {
+        if (me && me.role === "editor") enableEditorSync();
+        return seed();
       })
       .then(startApp, startApp);
   }
 
-  if (isEditor) console.info("[sync] editor mode — changes publish to the server");
   boot();
 })();

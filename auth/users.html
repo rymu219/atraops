@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Accounts — AtraOps</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --bg: #0b0f14; --bg-elevated: #111820; --bg-panel: #151c26; --bg-panel-2: #1a2330;
+    --bg-hover: #1e2836; --bg-input: #0e141c; --border: #2a3544; --border-strong: #3a4a5c;
+    --text: #e8eef6; --text-muted: #8b9bb0; --primary: #3b9eff; --primary-hover: #5cb0ff;
+    --accent: #22d3a6; --danger: #f07178; --radius: 10px; --radius-sm: 6px;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; background: var(--bg); color: var(--text);
+    font-family: "DM Sans", system-ui, -apple-system, sans-serif; line-height: 1.5;
+  }
+  .topbar {
+    display: flex; align-items: center; justify-content: space-between; gap: 1rem;
+    height: 60px; padding: 0 1.25rem; background: var(--bg-elevated);
+    border-bottom: 1px solid var(--border);
+  }
+  .brand { display: flex; align-items: center; gap: .6rem; font-weight: 700; letter-spacing: -.02em; }
+  .brand svg { color: var(--primary); }
+  .main { max-width: 900px; margin: 0 auto; padding: 1.75rem 1.25rem 3rem; }
+  h1 { margin: 0 0 .25rem; font-size: 1.45rem; font-weight: 700; letter-spacing: -.03em; }
+  .subtitle { margin: 0 0 1.5rem; color: var(--text-muted); font-size: .9rem; }
+  .panel {
+    background: var(--bg-panel); border: 1px solid var(--border);
+    border-radius: var(--radius); margin-bottom: 1.25rem;
+  }
+  .panel-header {
+    padding: .9rem 1.15rem; border-bottom: 1px solid var(--border);
+    font-weight: 650; font-size: 1rem;
+  }
+  .panel-body { padding: 1.15rem; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: .9rem 1rem; }
+  label span {
+    display: block; margin-bottom: .35rem; font-weight: 600; font-size: .72rem;
+    letter-spacing: .04em; text-transform: uppercase; color: var(--text-muted);
+  }
+  input, select {
+    width: 100%; padding: .55rem .75rem; font: inherit; color: var(--text);
+    background: var(--bg-input); border: 1px solid var(--border); border-radius: var(--radius-sm);
+  }
+  input:focus, select:focus {
+    outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px rgba(59,158,255,.35);
+  }
+  .btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: .4rem;
+    padding: .5rem .95rem; font: inherit; font-weight: 600; font-size: .875rem;
+    border: 1px solid transparent; border-radius: var(--radius-sm); cursor: pointer;
+  }
+  .btn-primary { background: var(--primary); color: #fff; border-color: var(--primary); }
+  .btn-primary:hover:not(:disabled) { background: var(--primary-hover); }
+  .btn-secondary { background: var(--bg-panel-2); color: var(--text); border-color: var(--border-strong); }
+  .btn-secondary:hover { background: var(--bg-hover); }
+  .btn-danger { background: rgba(240,113,120,.14); color: var(--danger); border-color: rgba(240,113,120,.35); }
+  .btn-danger:hover { background: var(--danger); color: #fff; }
+  .btn-sm { padding: .3rem .65rem; font-size: .78rem; }
+  .btn:disabled { opacity: .5; cursor: not-allowed; }
+  table { width: 100%; border-collapse: collapse; font-size: .875rem; }
+  th, td { padding: .65rem .85rem; text-align: left; border-bottom: 1px solid var(--border); }
+  th {
+    background: var(--bg-panel-2); font-size: .72rem; font-weight: 650;
+    text-transform: uppercase; letter-spacing: .04em; color: var(--text-muted);
+  }
+  tbody tr:last-child td { border-bottom: none; }
+  .badge {
+    display: inline-block; padding: .15rem .55rem; border-radius: 999px;
+    font-size: .72rem; font-weight: 650; text-transform: uppercase; letter-spacing: .02em;
+  }
+  .badge-editor { background: rgba(59,158,255,.15); color: var(--primary); border: 1px solid rgba(59,158,255,.35); }
+  .badge-viewer { background: var(--bg-hover); color: var(--text-muted); border: 1px solid var(--border); }
+  .msg { margin: 0 0 1rem; padding: .6rem .75rem; font-size: .85rem; border-radius: var(--radius-sm); }
+  .msg[hidden] { display: none; }
+  .msg-error { color: var(--danger); background: rgba(240,113,120,.14); border: 1px solid rgba(240,113,120,.35); }
+  .msg-ok { color: var(--accent); background: rgba(34,211,166,.14); border: 1px solid rgba(34,211,166,.35); }
+  .actions { margin-top: 1rem; display: flex; gap: .5rem; }
+  .mono { font-family: "JetBrains Mono", ui-monospace, monospace; font-size: .82rem; }
+  a { color: var(--primary); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+  <header class="topbar">
+    <span class="brand">
+      <svg viewBox="0 0 32 32" width="24" height="24" fill="none" aria-hidden="true">
+        <path d="M16 3L4 9v6c0 7.2 5.1 13.9 12 15.5C22.9 28.9 28 22.2 28 15V9L16 3z" stroke="currentColor" stroke-width="1.8"/>
+        <path d="M16 10v12M12 16h8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+      </svg>
+      AtraOps
+    </span>
+    <span><a href="/">Back to app</a></span>
+  </header>
+
+  <main class="main">
+    <h1>Accounts</h1>
+    <p class="subtitle">
+      Editors can change the published demo data. Viewers see it and can click
+      around, but their changes stay in their own browser.
+    </p>
+
+    <p class="msg msg-error" id="error" hidden></p>
+    <p class="msg msg-ok" id="ok" hidden></p>
+
+    <section class="panel">
+      <div class="panel-header">Add an account</div>
+      <div class="panel-body">
+        <form id="create">
+          <div class="grid">
+            <label>
+              <span>Email</span>
+              <input type="email" name="email" required autocomplete="off" />
+            </label>
+            <label>
+              <span>Password</span>
+              <input type="text" name="password" required minlength="10" autocomplete="off" />
+            </label>
+            <label>
+              <span>Role</span>
+              <select name="role">
+                <option value="viewer">Viewer</option>
+                <option value="editor">Editor</option>
+              </select>
+            </label>
+          </div>
+          <div class="actions">
+            <button type="submit" class="btn btn-primary">Create account</button>
+            <button type="button" class="btn btn-secondary" id="suggest">Suggest a password</button>
+          </div>
+        </form>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-header">Existing accounts</div>
+      <table>
+        <thead>
+          <tr><th>Email</th><th>Role</th><th>Created</th><th style="text-align:right">Actions</th></tr>
+        </thead>
+        <tbody id="rows">
+          <tr><td colspan="4" style="text-align:center;color:var(--text-muted)">Loading…</td></tr>
+        </tbody>
+      </table>
+    </section>
+  </main>
+
+<script>
+  var errorBox = document.getElementById("error");
+  var okBox = document.getElementById("ok");
+  var rows = document.getElementById("rows");
+  var createForm = document.getElementById("create");
+
+  function flash(box, msg) {
+    errorBox.hidden = true; okBox.hidden = true;
+    box.textContent = msg; box.hidden = false;
+  }
+  function fail(msg) { flash(errorBox, msg); }
+  function done(msg) { flash(okBox, msg); }
+
+  function api(url, options) {
+    return fetch(url, options).then(function (r) {
+      return r.json().then(function (data) {
+        if (!r.ok) throw new Error(data.error || "Request failed");
+        return data;
+      });
+    });
+  }
+
+  function randomPassword() {
+    var chars = "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+    var bytes = new Uint8Array(16);
+    crypto.getRandomValues(bytes);
+    var out = "";
+    for (var i = 0; i < bytes.length; i++) out += chars[bytes[i] % chars.length];
+    return out;
+  }
+
+  document.getElementById("suggest").addEventListener("click", function () {
+    createForm.elements.password.value = randomPassword();
+  });
+
+  function render(users) {
+    if (!users.length) {
+      rows.innerHTML = '<tr><td colspan="4" style="text-align:center;color:var(--text-muted)">No accounts yet.</td></tr>';
+      return;
+    }
+    rows.innerHTML = "";
+    users.forEach(function (u) {
+      var tr = document.createElement("tr");
+
+      var email = document.createElement("td");
+      email.className = "mono";
+      email.textContent = u.email;
+
+      var role = document.createElement("td");
+      var badge = document.createElement("span");
+      badge.className = "badge " + (u.role === "editor" ? "badge-editor" : "badge-viewer");
+      badge.textContent = u.role;
+      role.appendChild(badge);
+
+      var created = document.createElement("td");
+      created.textContent = new Date(u.created_at).toLocaleDateString();
+
+      var actions = document.createElement("td");
+      actions.style.textAlign = "right";
+
+      var reset = document.createElement("button");
+      reset.className = "btn btn-secondary btn-sm";
+      reset.textContent = "Reset password";
+      reset.onclick = function () {
+        var pw = randomPassword();
+        if (!confirm("Set a new password for " + u.email + "?\n\n" + pw + "\n\nCopy it now — it won't be shown again.")) return;
+        api("/api/users/" + u.id + "/password", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ password: pw })
+        }).then(function () {
+          done("Password reset for " + u.email + ". New password: " + pw);
+        }).catch(function (e) { fail(e.message); });
+      };
+
+      var del = document.createElement("button");
+      del.className = "btn btn-danger btn-sm";
+      del.style.marginLeft = ".35rem";
+      del.textContent = "Delete";
+      del.onclick = function () {
+        if (!confirm("Delete " + u.email + "? They'll be signed out immediately.")) return;
+        api("/api/users/" + u.id, { method: "DELETE" })
+          .then(function () { done("Deleted " + u.email); load(); })
+          .catch(function (e) { fail(e.message); });
+      };
+
+      actions.appendChild(reset);
+      actions.appendChild(del);
+
+      tr.appendChild(email); tr.appendChild(role);
+      tr.appendChild(created); tr.appendChild(actions);
+      rows.appendChild(tr);
+    });
+  }
+
+  function load() {
+    api("/api/users").then(function (d) { render(d.users); }).catch(function (e) { fail(e.message); });
+  }
+
+  createForm.addEventListener("submit", function (e) {
+    e.preventDefault();
+    var body = {
+      email: createForm.elements.email.value,
+      password: createForm.elements.password.value,
+      role: createForm.elements.role.value
+    };
+    api("/api/users", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body)
+    }).then(function () {
+      done("Created " + body.email + " with password: " + body.password + " — send it to them, it isn't stored anywhere readable.");
+      createForm.reset();
+      load();
+    }).catch(function (e) { fail(e.message); });
+  });
+
+  load();
+</script>
+</body>
+</html>
