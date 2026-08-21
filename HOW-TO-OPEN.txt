@@ -9,8 +9,6 @@ This folder has everything needed to open AtraOps on another computer **with you
 | `index.html` + `css\` + `js\` | The AtraOps app (open in Edge or Chrome) |
 | `OPEN-AtraOps.bat` | Double-click to open the app |
 | `AtraOps-backend-LATEST.json` | **Your live data** (serials, ELs, DTs, documents, masters) |
-| `DATA\AtraOps-backend-LIVE.json` | Same data (backup copy) |
-| `AtraOps-backend-YYYYMMDD-….json` | Timestamped export copy |
 
 ## On the other computer
 
@@ -21,7 +19,7 @@ This folder has everything needed to open AtraOps on another computer **with you
    - Username: `admin`
    - Password: `admin123`
 4. Click **Import Backend JSON**
-5. Choose **`AtraOps-backend-LATEST.json`** (or the file in `DATA\`)
+5. Choose **`AtraOps-backend-LATEST.json`**
 6. Confirm replace → done
 
 They will see your serials, master lists, equipment lists, delivery tickets, documents, etc.
