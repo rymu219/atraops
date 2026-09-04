@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>AtraOps — Backend Export Helper</title>
+  <title>LOL PUS — Backend Export Helper</title>
   <style>
     body { font-family: system-ui, sans-serif; max-width: 640px; margin: 2rem auto; padding: 0 1rem; line-height: 1.5; }
     code { background: #f0f0f0; padding: 0.1em 0.35em; border-radius: 4px; }
@@ -12,10 +12,10 @@
   </style>
 </head>
 <body>
-  <h1>AtraOps Backend Export Helper</h1>
+  <h1>LOL PUS Backend Export Helper</h1>
   <p class="note">
     Open this file from the <strong>same folder</strong> as <code>index.html</code> (same browser origin)
-    so it can read the data saved by AtraOps. Prefer using <strong>Admin → Export Backend JSON</strong>
+    so it can read the data saved by LOL PUS. Prefer using <strong>Admin → Export Backend JSON</strong>
     inside the main app when possible.
   </p>
   <button type="button" id="btn">Download Backend JSON</button>
@@ -42,7 +42,7 @@
         }
       });
       var pkg = {
-        app: "AtraOps",
+        app: "LOL PUS",
         version: 1,
         exportedAt: new Date().toISOString(),
         keys: KEYS.slice(),
@@ -51,7 +51,7 @@
       var blob = new Blob([JSON.stringify(pkg, null, 2)], { type: "application/json" });
       var a = document.createElement("a");
       a.href = URL.createObjectURL(blob);
-      a.download = "AtraOps-backend-" + new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-") + ".json";
+      a.download = "LOL-PUS-backend-" + new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-") + ".json";
       a.click();
       document.getElementById("status").textContent = "Download started. Copy this JSON with the AtraOps-Export folder to the new PC.";
     };
