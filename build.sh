@@ -12,6 +12,12 @@
 # exactly one source and no fallback that can overwrite it.
 set -euo pipefail
 
+# Grok uploads large app.js as js/app.part-*.js when the contents API
+# cannot take the whole file in one call. Assemble those first.
+if ls js/app.part-*.js >/dev/null 2>&1; then
+  cat js/app.part-*.js > js/app.js
+fi
+
 rm -rf dist
 mkdir -p dist/js
 cp index.html dist/
