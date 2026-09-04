@@ -26,7 +26,7 @@
   "use strict";
 
   var API = "/api/state";
-  var APP_SRC = "js/app.js?v=20260818-score-apply-config";
+  var APP_SRC = "js/app.js?v=20260904-queue-util";
   var FLUSH_DELAY = 1500;
   var PREFIX = "fieldops-";
 

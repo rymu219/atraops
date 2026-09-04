@@ -44,6 +44,7 @@
     rackBin: PREFIX + "rack-bin",
     assetDocs: PREFIX + "asset-docs",
     migrated: PREFIX + "migrated-v4",
+    utilRentRef: PREFIX + "util-rent-ref-v1",
   };
 
   var ADMIN_USER = "admin";
@@ -145,6 +146,7 @@
     { id: "ncr", title: "NCR", desc: "API Q2 non-conformance — risk matrix, CAPA, notify", route: "ncr", icon: "⚠" },
     { id: "vendors", title: "Vendors", desc: "Add suppliers — approval info, SAR, supporting documents", route: "vendors", icon: "⬡" },
     { id: "supplier-score", title: "Supplier Score", desc: "Composite supplier performance score, tier, and trend", route: "supplier-score", icon: "◎" },
+    { id: "queue", title: "The Queue", desc: "Routing queue — need date, status, serials, and work instructions", route: "queue", icon: "▤" },
   ];
 
   /* Sample cardex / inventory assets */
@@ -341,6 +343,9 @@
     ncrFilter: { status: "" },
     ncrTab: "title",
     ncrDraft: null,
+    queueFilter: null,
+    queuePage: 1,
+    utilFilter: null,
     toastTimer: null,
   };
 
@@ -1793,6 +1798,7 @@
       setAssetStatus(sn, "In", {
         note: "RR " + rrLabel + " · DT " + formatDtNo(dt.dtNo || dt.id),
         lastReceivingReport: rrLabel,
+        lastReturnDate: String(stamp).slice(0, 10),
       });
       if (el) {
         (el.lines || []).forEach(function (ln) {
@@ -2243,12 +2249,12 @@
     appendCardexHistory(serial, status === "Out" ? "Issued / Out" : "Returned / In", extra && extra.note ? extra.note : "");
   }
 
-  function appendCardexHistory(serial, event, detail) {
+  function appendCardexHistory(serial, event, detail, at) {
     var all = storageGet(KEYS.cardexHistory, {});
     var key = String(serial).toUpperCase();
     if (!all[key]) all[key] = [];
     all[key].unshift({
-      date: new Date().toISOString(),
+      date: at || new Date().toISOString(),
       event: event,
       detail: detail || "",
     });
@@ -4180,6 +4186,7 @@
     if (rec) {
       rec.status = "Out";
       rec.lastDeliveryTicket = "1";
+      rec.lastDtDate = "2026-03-15";
       upsertAsset(rec);
     }
 
@@ -4570,6 +4577,162 @@
       return nb - na;
     });
     return list[0];
+  }
+
+  /**
+   * Utilization reference:
+   * 123456 stays on a customer DT with no RR (currently utilized).
+   * ELV-12 gets a closed DT → RR cycle so returned time is measurable.
+   */
+  function ensureUtilReferenceRentHistory() {
+    if (storageGet(KEYS.utilRentRef, false)) return;
+    var rrs = loadReceivingReports();
+    var dts = loadDts();
+    var dtsChanged = false;
+    var rrsChanged = false;
+
+    function dtHasSerial(dt, serial) {
+      var key = String(serial).toUpperCase();
+      var hit = false;
+      dtAllSerials(dt).forEach(function (sn) {
+        if (String(sn).toUpperCase() === key) hit = true;
+      });
+      return hit;
+    }
+
+    /* 123456: currently out — strip receivedSerials if there is no actual RR */
+    dts.forEach(function (dt) {
+      if (!dtHasSerial(dt, "123456")) return;
+      var recMap = dt.receivedSerials || {};
+      var rec = recMap["123456"] || recMap["123456".toUpperCase()];
+      if (!rec) {
+        if (String(dt.receiveStatus || "").toLowerCase() === "received") {
+          dt.receiveStatus = "open";
+          dtsChanged = true;
+        }
+        return;
+      }
+      var rrExists = getRrsForDt(dt.dtNo || dt.id).some(function (r) {
+        return utilRrHasSerial(r, "123456");
+      });
+      if (rrExists) return;
+      delete recMap["123456"];
+      delete recMap["123456".toUpperCase()];
+      dt.receivedSerials = recMap;
+      if (String(dt.receiveStatus || "").toLowerCase() === "received") dt.receiveStatus = "open";
+      dtsChanged = true;
+    });
+
+    var rec123 = findCardexRecord("123456");
+    if (rec123) {
+      var hasOpenDt = dts.some(function (dt) {
+        return dtHasSerial(dt, "123456") && !utilRrDateForSerialOnDt(dt, "123456").at;
+      });
+      if (hasOpenDt && String(rec123.status || "") !== "Out") {
+        rec123.status = "Out";
+        upsertAsset(rec123);
+      }
+    }
+
+    /* ELV-12: returned rental so utilization has a closed DT → RR window */
+    var hasElvDt = dts.some(function (dt) {
+      return dtHasSerial(dt, "ELV-12");
+    });
+    if (!hasElvDt && findCardexRecord("ELV-12")) {
+      var dtNo = nextDtNo();
+      var rrNo = nextRrNo();
+      var rrLabel = String(rrNo);
+      var ship = "2026-05-01";
+      var ret = "2026-07-15T16:00:00.000Z";
+      var elv = findCardexRecord("ELV-12");
+      var dtElv = {
+        id: dtNo,
+        dtNo: dtNo,
+        elId: "",
+        orderId: "",
+        orderNo: "",
+        elNo: "",
+        customer: "Shell",
+        company: "Shell",
+        well: "Mars A-12",
+        jobNo: "",
+        shipDate: ship,
+        type: "Delivery Ticket",
+        status: "Completed",
+        completed: true,
+        completedAt: ship,
+        shipTo: "Shell — Mars A-12",
+        destType: "customer",
+        receiveStatus: "received",
+        receivedSerials: {
+          "ELV-12": { at: ret, rrLabel: rrLabel },
+        },
+        rrIds: [],
+        lines: [
+          {
+            itemNo: "1",
+            serial: "ELV-12",
+            description: (elv && elv.description) || "Elevator",
+            uom: (elv && elv.uom) || "EA",
+            qty: 1,
+          },
+        ],
+        notes: "Closed rental used for Daily Utilization (DT ship → RR return).",
+        createdAt: ship + "T08:00:00.000Z",
+      };
+      var rrElv = {
+        id: uid("RR"),
+        rrNo: rrNo,
+        rrLabel: rrLabel,
+        partialIndex: 1,
+        isPartial: false,
+        isFinal: true,
+        elId: "",
+        dtId: dtNo,
+        dtNo: dtNo,
+        customer: "Shell",
+        company: "Shell",
+        serials: ["ELV-12"],
+        lines: [
+          {
+            serial: "ELV-12",
+            description: (elv && elv.description) || "Elevator",
+            itemNo: "1",
+            uom: (elv && elv.uom) || "EA",
+            qty: 1,
+          },
+        ],
+        createdAt: ret,
+        notes: "Return receiving ticket for ELV-12 — utilization end date.",
+      };
+      dtElv.rrIds = [rrElv.id];
+      dts.push(normalizeDt(dtElv));
+      rrs.push(rrElv);
+      dtsChanged = true;
+      rrsChanged = true;
+      elv.status = "In";
+      elv.lastDeliveryTicket = dtNo;
+      elv.lastDtDate = ship;
+      elv.lastReceivingReport = rrLabel;
+      elv.lastReturnDate = "2026-07-15";
+      upsertAsset(elv);
+      appendCardexHistory(
+        "ELV-12",
+        "Issued / Out",
+        "DT " + dtNo + " · on rent " + ship,
+        ship + "T08:00:00.000Z"
+      );
+      appendCardexHistory(
+        "ELV-12",
+        "Returned / In",
+        "RR " + rrLabel + " · DT " + dtNo,
+        ret
+      );
+    }
+
+    if (dtsChanged) saveDts(dts);
+    if (rrsChanged) saveReceivingReports(rrs);
+    storageSet(KEYS.utilRentRef, true);
   }
 
   function formatDateTime(iso) {
@@ -5263,6 +5426,9 @@
       state.scoreFilter = {};
       state.scorePage = 1;
     }
+    if (name === "queue" && prev !== "queue") {
+      state.queuePage = 1;
+    }
     if (name === "tickets-receiving-search" && prev !== "tickets-receiving-search") {
       state.ticketsFilter = { status: "open" };
       state.ticketsPage = 1;
@@ -5289,6 +5455,7 @@
     "cardex-details": viewCardexDetails,
     "cardex-history": viewCardexHistory,
     "cardex-docs": viewCardexDocs,
+    "cardex-util": viewCardexUtil,
     tickets: viewTickets,
     "tickets-delivery": viewTicketsDelivery,
     "tickets-vendor-dt": viewTicketsVendorDtNew,
@@ -5314,6 +5481,7 @@
     ncr: viewNcr,
     "ncr-new": viewNcrNew,
     "ncr-detail": viewNcrDetail,
+    queue: viewQueue,
     admin: viewAdmin,
     "admin-serials": viewAdminSerials,
     "admin-serial-detail": viewAdminSerialDetail,
@@ -5323,6 +5491,8 @@
   function render() {
     var main = $("#main");
     if (!main) return false;
+    main.classList.toggle("queue-wide", state.route === "queue");
+    main.classList.toggle("util-wide", state.route === "cardex-util");
     var fn = routes[state.route] || viewHome;
     var ok = true;
     try {
@@ -5337,6 +5507,981 @@
     }
     updateClock();
     return ok;
+  }
+
+  /* ========================================================================
+   * THE QUEUE — routing board (layout first; operational links next)
+   * ======================================================================== */
+  var QUEUE_PAGE_SIZE = 25;
+  var QUEUE_PROCESSING_GROUPS = [
+    "AD HOC",
+    "OUTGOING",
+    "RECEIVE FROM JOB",
+    "RECEIVE FROM PO",
+    "RECEIVE FROM STORE",
+    "RECEIVE FROM VENDOR",
+    "RECEIVE FROM ANY",
+  ];
+  var QUEUE_STATUSES = ["ACTIVE", "INACTIVE", "INPROCESS"];
+  var QUEUE_WI_STATUSES = ["APPROVED", "PENDING", "REJECTED", "NOT APPLICABLE"];
+
+  function defaultQueueFilter() {
+    return {
+      master: "",
+      second: "",
+      processingGroup: "",
+      ageDays: 0,
+      store: "",
+      status: "",
+      serial: "",
+      wo: "",
+      job: "",
+      processingDoc: "",
+      customer: "",
+      rig: "",
+      docRef: "",
+      wiStatus: "",
+      workArea: "",
+      routingCategory: "",
+      description: "",
+      department: "",
+      workInstructions: "",
+      hideUnreleased: true,
+      viewAll: false,
+      sort: "created-asc",
+      showSummary: false,
+    };
+  }
+
+  function queueBaseItem(partial) {
+    return Object.assign(
+      {
+        qty: 1,
+        remaining: 1,
+        store: "LAFAYETTE",
+        storeNo: "10",
+        status: "ACTIVE",
+        jobNo: "2844",
+        customer: "SCHLUMBERGER TECHNOLOGY C",
+        rig: "OCEAN BLACKRHINO",
+        elNo: "30388110",
+        dtNo: "10570989",
+        rrNo: "32486810",
+        wo: "",
+        processingDoc: "",
+        needDate: "2026-08-19",
+        createdAt: "2026-07-07T13:17:00",
+        wiStatus: "APPROVED",
+        wiDate: "2026-07-07T13:17:00",
+        wiNote: "NOT APPLICABLE",
+        department: "Superior Inspection Services",
+        workArea: "Inspection Shop - Incoming (Step 1)",
+        routingCategory: "Return From Job",
+        processingGroup: "RECEIVE FROM JOB",
+        workInstructions: "DSI CAT3-S",
+        released: true,
+        ageDays: 55,
+      },
+      partial || {}
+    );
+  }
+
+  function loadQueueItems() {
+    return [
+      queueBaseItem({
+        id: "Q-49378",
+        master: "PONY COLLARS: NON-MAG",
+        second: "PONY COLLAR NON-MAG: 06-3/4\"",
+        description: "PONY COLLAR, NON-MAG: 6-3/4\" OD X 2-13/16\" ID X 10' W/ 4-1/2\" IF CONNS.",
+        itemCode: "89106750010200",
+        serial: "49378",
+        processingModule: "DCOLLAR V2",
+      }),
+      queueBaseItem({
+        id: "Q-101084",
+        master: "BIT SUBS: STEEL",
+        second: "BIT SUBS STEEL",
+        description: "BIT SUB, STEEL: 4-1/2\" REG BOX X 4-1/2\" IF BOX",
+        itemCode: "80001000329000",
+        serial: "101084",
+        processingModule: "SUB",
+      }),
+      queueBaseItem({
+        id: "Q-106346",
+        master: "CROSSOVER SUBS: STEEL",
+        second: "CROSSOVER SUB, STEEL",
+        description: "CROSSOVER SUB, STEEL: 5-1/2\" FH BOX X 4-1/2\" IF PIN",
+        itemCode: "77005500601400",
+        serial: "106346",
+        processingModule: "SUB",
+      }),
+      queueBaseItem({
+        id: "Q-106457",
+        master: "CROSSOVER SUBS: STEEL",
+        second: "CROSSOVER SUB, STEEL",
+        description: "CROSSOVER SUB, STEEL: 5-1/2\" FH BOX X 4-1/2\" IF PIN",
+        itemCode: "77005500601400",
+        serial: "106457",
+        processingModule: "SUB",
+      }),
+      queueBaseItem({
+        id: "Q-88101",
+        master: "DRILL COLLARS: NON-MAG SLICK",
+        second: "DRILL COLLAR NON-MAG: 06-3/4\"",
+        description: "DRILL COLLAR, NON-MAG SLICK: 6-3/4\" OD X 2-13/16\" ID X 31'",
+        itemCode: "41006750008800",
+        serial: "88101",
+        processingModule: "DCOLLAR V2",
+      }),
+      queueBaseItem({
+        id: "Q-22011",
+        master: "DRILLING JAR PUP JOINTS",
+        second: "DRILLING JAR PUP JOINTS: LOWER",
+        description: "DRILLING JAR PUP JOINT, LOWER: 6-1/2\" OD X 2-1/4\" ID",
+        itemCode: "55220110001100",
+        serial: "22011",
+        processingModule: "JAR",
+      }),
+      queueBaseItem({
+        id: "Q-22012",
+        master: "DRILLING JAR PUP JOINTS",
+        second: "DRILLING JAR PUP JOINTS: LOWER",
+        description: "DRILLING JAR PUP JOINT, LOWER: 6-1/2\" OD X 2-1/4\" ID",
+        itemCode: "55220110001100",
+        serial: "22012",
+        processingModule: "JAR",
+      }),
+      queueBaseItem({
+        id: "Q-22021",
+        master: "DRILLING JAR PUP JOINTS",
+        second: "DRILLING JAR PUP JOINTS: UPPER",
+        description: "DRILLING JAR PUP JOINT, UPPER: 6-1/2\" OD X 2-1/4\" ID",
+        itemCode: "55220110002100",
+        serial: "22021",
+        processingModule: "JAR",
+      }),
+      queueBaseItem({
+        id: "Q-22022",
+        master: "DRILLING JAR PUP JOINTS",
+        second: "DRILLING JAR PUP JOINTS: UPPER",
+        description: "DRILLING JAR PUP JOINT, UPPER: 6-1/2\" OD X 2-1/4\" ID",
+        itemCode: "55220110002100",
+        serial: "22022",
+        processingModule: "JAR",
+      }),
+      queueBaseItem({
+        id: "Q-77440",
+        master: "DRILLING JARS",
+        second: "DRILLING JARS: HYDRAULIC",
+        description: "DRILLING JAR, HYDRAULIC: 6-1/2\" OD X 2-1/4\" ID",
+        itemCode: "55077440000100",
+        serial: "77440",
+        processingModule: "JAR",
+      }),
+      queueBaseItem({
+        id: "Q-50110",
+        master: "PONY COLLARS: STEEL",
+        second: "PONY COLLAR STEEL: 06-3/4\"",
+        description: "PONY COLLAR, STEEL: 6-3/4\" OD X 2-13/16\" ID X 10' W/ 4-1/2\" IF CONNS.",
+        itemCode: "89106750020100",
+        serial: "50110",
+        processingModule: "DCOLLAR V2",
+      }),
+      queueBaseItem({
+        id: "Q-33001",
+        master: "STABILIZERS INTEGRAL: STEEL",
+        second: "AUTOTRAK STABILIZER IBNSTEEL: 06-13/16\" - 07-7/8\" HS SPIRAL 3 BLADE",
+        description: "AUTOTRAK STABILIZER, STEEL: 06-13/16\" - 07-7/8\" HS SPIRAL 3 BLADE",
+        itemCode: "62033001000100",
+        serial: "33001",
+        processingModule: "STAB",
+      }),
+      queueBaseItem({
+        id: "Q-33002",
+        master: "STABILIZERS INTEGRAL: STEEL",
+        second: "AUTOTRAK STABILIZER IBNSTEEL: 06-13/16\" - 07-7/8\" HS SPIRAL 3 BLADE",
+        description: "AUTOTRAK STABILIZER, STEEL: 06-13/16\" - 07-7/8\" HS SPIRAL 3 BLADE",
+        itemCode: "62033001000100",
+        serial: "33002",
+        processingModule: "STAB",
+      }),
+      queueBaseItem({
+        id: "Q-33003",
+        master: "STABILIZERS INTEGRAL: STEEL",
+        second: "AUTOTRAK STABILIZER IBNSTEEL: 06-13/16\" - 07-7/8\" HS SPIRAL 3 BLADE",
+        description: "AUTOTRAK STABILIZER, STEEL: 06-13/16\" - 07-7/8\" HS SPIRAL 3 BLADE",
+        itemCode: "62033001000100",
+        serial: "33003",
+        processingModule: "STAB",
+      }),
+      queueBaseItem({
+        id: "Q-33110",
+        master: "STABILIZERS INTEGRAL: STEEL",
+        second: "INTEGRAL BLADE STABILIZER STEEL: 08-1/2\"",
+        description: "INTEGRAL BLADE STABILIZER, STEEL: 8-1/2\" OD X 2-13/16\" ID",
+        itemCode: "62033110000800",
+        serial: "33110",
+        processingModule: "STAB",
+      }),
+      queueBaseItem({
+        id: "Q-33111",
+        master: "STABILIZERS INTEGRAL: STEEL",
+        second: "INTEGRAL BLADE STABILIZER STEEL: 08-1/2\"",
+        description: "INTEGRAL BLADE STABILIZER, STEEL: 8-1/2\" OD X 2-13/16\" ID",
+        itemCode: "62033110000800",
+        serial: "33111",
+        processingModule: "STAB",
+      }),
+      queueBaseItem({
+        id: "Q-33112",
+        master: "STABILIZERS INTEGRAL: STEEL",
+        second: "INTEGRAL BLADE STABILIZER STEEL: 08-1/2\"",
+        description: "INTEGRAL BLADE STABILIZER, STEEL: 8-1/2\" OD X 2-13/16\" ID",
+        itemCode: "62033110000800",
+        serial: "33112",
+        processingModule: "STAB",
+      }),
+      queueBaseItem({
+        id: "Q-33201",
+        master: "STABILIZERS INTEGRAL: STEEL",
+        second: "NEAR BIT STABILIZER STEEL: 12-1/4\"",
+        description: "NEAR BIT STABILIZER, STEEL: 12-1/4\" OD SPIRAL",
+        itemCode: "62033201001200",
+        serial: "33201",
+        processingModule: "STAB",
+        processingGroup: "RECEIVE FROM VENDOR",
+        store: "BROUSSARD",
+        storeNo: "12",
+      }),
+      queueBaseItem({
+        id: "Q-33202",
+        master: "STABILIZERS INTEGRAL: STEEL",
+        second: "NEAR BIT STABILIZER STEEL: 12-1/4\"",
+        description: "NEAR BIT STABILIZER, STEEL: 12-1/4\" OD SPIRAL",
+        itemCode: "62033201001200",
+        serial: "33202",
+        processingModule: "STAB",
+        processingGroup: "RECEIVE FROM STORE",
+      }),
+      queueBaseItem({
+        id: "Q-33203",
+        master: "STABILIZERS INTEGRAL: STEEL",
+        second: "STRING STABILIZER STEEL: 08-3/8\"",
+        description: "STRING STABILIZER, STEEL: 8-3/8\" OD X 2-13/16\" ID",
+        itemCode: "62033203000800",
+        serial: "33203",
+        processingModule: "STAB",
+      }),
+      queueBaseItem({
+        id: "Q-44001",
+        master: "SUBS: NON-MAG",
+        second: "DOUBLE PIN SUBS NON-MAG",
+        description: "DOUBLE PIN SUB, NON-MAG: 4-1/2\" IF PIN X 4-1/2\" IF PIN",
+        itemCode: "77044001000100",
+        serial: "44001",
+        processingModule: "SUB",
+      }),
+      queueBaseItem({
+        id: "Q-44002",
+        master: "SUBS: NON-MAG",
+        second: "DOUBLE PIN SUBS NON-MAG",
+        description: "DOUBLE PIN SUB, NON-MAG: 4-1/2\" IF PIN X 4-1/2\" IF PIN",
+        itemCode: "77044001000100",
+        serial: "44002",
+        processingModule: "SUB",
+      }),
+      queueBaseItem({
+        id: "Q-44110",
+        master: "DRILL COLLAR LIFT SUBS: STEEL",
+        second: "DRILL COLLAR LIFT SUBS STEEL",
+        description: "DRILL COLLAR LIFT SUB, STEEL: 6-3/4\" X 4-1/2\" IF",
+        itemCode: "77044110000100",
+        serial: "44110",
+        processingModule: "SUB",
+        processingGroup: "OUTGOING",
+        status: "INPROCESS",
+        workArea: "Inspection Shop - Outgoing (Step 4)",
+        routingCategory: "Outgoing to Job",
+      }),
+      queueBaseItem({
+        id: "Q-101200",
+        master: "BIT SUBS: STEEL",
+        second: "BIT SUBS STEEL",
+        description: "BIT SUB, STEEL: 6-5/8\" REG BOX X 4-1/2\" IF BOX",
+        itemCode: "80001000329110",
+        serial: "101200",
+        processingModule: "SUB",
+        processingGroup: "AD HOC",
+        status: "INACTIVE",
+        released: false,
+        wiStatus: "PENDING",
+        wiNote: "AWAITING WI",
+      }),
+      queueBaseItem({
+        id: "Q-55001",
+        master: "STABILIZERS INTEGRAL: STEEL",
+        second: "AUTOTRAK STABILIZER IBNSTEEL: 06-13/16\" - 07-7/8\" HS SPIRAL 3 BLADE",
+        description: "AUTOTRAK STABILIZER, STEEL: 06-13/16\" - 07-7/8\" HS SPIRAL 3 BLADE",
+        itemCode: "62033001000100",
+        serial: "55001",
+        processingModule: "STAB",
+        jobNo: "2910",
+        elNo: "30389002",
+        dtNo: "10572001",
+        customer: "CHEVRON",
+        rig: "BLACK RHINO",
+        needDate: "2026-08-22",
+        createdAt: "2026-07-12T09:04:00",
+        ageDays: 50,
+      }),
+      queueBaseItem({
+        id: "Q-55002",
+        master: "PONY COLLARS: NON-MAG",
+        second: "PONY COLLAR NON-MAG: 06-3/4\"",
+        description: "PONY COLLAR, NON-MAG: 6-3/4\" OD X 2-13/16\" ID X 15' W/ 4-1/2\" IF CONNS.",
+        itemCode: "89106750010215",
+        serial: "55002",
+        processingModule: "DCOLLAR V2",
+        processingGroup: "RECEIVE FROM PO",
+        released: false,
+        status: "INPROCESS",
+      }),
+      queueBaseItem({
+        id: "Q-66010",
+        master: "DRILLING JAR PUP JOINTS",
+        second: "DRILLING JAR PUP JOINTS: LOWER",
+        description: "DRILLING JAR PUP JOINT, LOWER: 8\" OD X 3\" ID",
+        itemCode: "55220110001800",
+        serial: "66010",
+        processingModule: "JAR",
+        store: "HOUMA",
+        storeNo: "08",
+        processingGroup: "RECEIVE FROM ANY",
+        jobNo: "3102",
+        customer: "SHELL",
+        rig: "DEEPWATER NAUTILUS",
+      }),
+      queueBaseItem({
+        id: "Q-77001",
+        master: "SUBS: NON-MAG",
+        second: "DOUBLE PIN SUBS NON-MAG",
+        description: "DOUBLE PIN SUB, NON-MAG: 6-5/8\" FH PIN X 6-5/8\" FH PIN",
+        itemCode: "77044001000600",
+        serial: "77001",
+        processingModule: "SUB",
+        wo: "WO-4412",
+        processingDoc: "PD-8821",
+      }),
+    ];
+  }
+
+  function formatQueueShortDate(iso) {
+    if (!iso) return "—";
+    var p = String(iso).split("T")[0].split("-");
+    if (p.length !== 3) return escapeHtml(String(iso));
+    var months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    var mi = parseInt(p[1], 10) - 1;
+    var mon = months[mi] || p[1];
+    return mon + "/" + p[2] + "/" + p[0];
+  }
+
+  function formatQueueDateTime(iso) {
+    if (!iso) return "—";
+    var d = new Date(iso);
+    if (isNaN(d.getTime())) return formatQueueShortDate(iso);
+    var months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    var dd = String(d.getDate()).padStart(2, "0");
+    var h = d.getHours();
+    var ampm = h >= 12 ? "PM" : "AM";
+    var h12 = h % 12;
+    if (!h12) h12 = 12;
+    var mm = String(d.getMinutes()).padStart(2, "0");
+    return months[d.getMonth()] + "/" + dd + "/" + d.getFullYear() + " " + String(h12).padStart(2, "0") + ":" + mm + " " + ampm;
+  }
+
+  function queueContains(hay, needle) {
+    if (!needle) return true;
+    return String(hay || "").toLowerCase().indexOf(String(needle).toLowerCase()) !== -1;
+  }
+
+  function filterQueueItems(all, f) {
+    f = f || defaultQueueFilter();
+    return (all || []).filter(function (item) {
+      if (f.hideUnreleased && !item.released) return false;
+      if (f.master && item.master !== f.master) return false;
+      if (f.second && item.second !== f.second) return false;
+      if (f.processingGroup && item.processingGroup !== f.processingGroup) return false;
+      var age = Number(f.ageDays) || 0;
+      if (age && Number(item.ageDays || 0) < age) return false;
+      if (f.store && item.store !== f.store) return false;
+      if (f.status && item.status !== f.status) return false;
+      if (f.serial && !queueContains(item.serial, f.serial)) return false;
+      if (f.wo && !queueContains(item.wo, f.wo)) return false;
+      if (f.job && !queueContains(item.jobNo, f.job)) return false;
+      if (f.processingDoc && !queueContains(item.processingDoc, f.processingDoc)) return false;
+      if (f.customer && !queueContains(item.customer, f.customer)) return false;
+      if (f.rig && !queueContains(item.rig, f.rig)) return false;
+      if (f.docRef) {
+        var docs = [item.elNo, item.dtNo, item.rrNo, item.wo, item.processingDoc, item.jobNo].join(" ");
+        if (!queueContains(docs, f.docRef)) return false;
+      }
+      if (f.wiStatus && item.wiStatus !== f.wiStatus) return false;
+      if (f.workArea && !queueContains(item.workArea, f.workArea)) return false;
+      if (f.routingCategory && !queueContains(item.routingCategory, f.routingCategory)) return false;
+      if (f.description && !queueContains(item.description + " " + item.second, f.description)) return false;
+      if (f.department && !queueContains(item.department, f.department)) return false;
+      if (f.workInstructions && !queueContains(item.workInstructions, f.workInstructions)) return false;
+      return true;
+    });
+  }
+
+  function sortQueueItems(list, sort) {
+    var dir = sort === "created-desc" || sort === "need-desc" ? -1 : 1;
+    var key = sort && sort.indexOf("need") === 0 ? "needDate" : "createdAt";
+    return (list || []).slice().sort(function (a, b) {
+      var av = String(a[key] || "");
+      var bv = String(b[key] || "");
+      if (av === bv) return String(a.serial || "").localeCompare(String(b.serial || ""));
+      return av < bv ? -1 * dir : dir;
+    });
+  }
+
+  function queueCountBy(list, key) {
+    var map = {};
+    (list || []).forEach(function (item) {
+      var k = item[key] || "";
+      if (!k) return;
+      if (!map[k]) map[k] = 0;
+      map[k] += Number(item.qty) || 1;
+    });
+    return Object.keys(map)
+      .sort()
+      .map(function (k) {
+        return { name: k, qty: map[k] };
+      });
+  }
+
+  function queueSelectHtml(id, values, selected, allLabel) {
+    var html =
+      '<select id="' +
+      id +
+      '" class="queue-select">' +
+      '<option value="">' +
+      escapeHtml(allLabel) +
+      "</option>";
+    (values || []).forEach(function (v) {
+      html +=
+        '<option value="' +
+        escapeHtml(v) +
+        '"' +
+        (selected === v ? " selected" : "") +
+        ">" +
+        escapeHtml(v) +
+        "</option>";
+    });
+    html += "</select>";
+    return html;
+  }
+
+  function queueListboxHtml(kind, rows, selected) {
+    if (!rows.length) {
+      return '<div class="queue-listbox"><div class="queue-listbox-empty">None</div></div>';
+    }
+    return (
+      '<div class="queue-listbox" data-list="' +
+      kind +
+      '">' +
+      rows
+        .map(function (row) {
+          var sel = selected === row.name ? " selected" : "";
+          return (
+            '<button type="button" class="queue-list-item' +
+            sel +
+            '" data-kind="' +
+            kind +
+            '" data-value="' +
+            escapeHtml(row.name) +
+            '">' +
+            (row.qty != null
+              ? '<span class="queue-list-qty">' + escapeHtml(String(row.qty)) + "</span>"
+              : "") +
+            '<span class="queue-list-name">' +
+            escapeHtml(row.name) +
+            "</span></button>"
+          );
+        })
+        .join("") +
+      "</div>"
+    );
+  }
+
+  function queueLink(label, extraClass) {
+    return (
+      '<span class="queue-link' +
+      (extraClass ? " " + extraClass : "") +
+      '" title="Links will be wired next">' +
+      escapeHtml(label) +
+      "</span>"
+    );
+  }
+
+  function queueOpenTag() {
+    return '<span class="queue-open">open</span>';
+  }
+
+  function renderQueueItem(item) {
+    var statusClass = "queue-status-" + String(item.status || "ACTIVE").toLowerCase();
+    return (
+      '<article class="queue-item">' +
+      '<div class="queue-cell queue-cell-need">' +
+      '<div class="queue-need-label">Router Need Date</div>' +
+      '<div class="queue-need-date">' +
+      escapeHtml(formatQueueShortDate(item.needDate)) +
+      "</div>" +
+      '<div class="queue-store-no">Store ' +
+      escapeHtml(item.storeNo || "—") +
+      "</div>" +
+      '<button type="button" class="queue-icon-btn" title="Message (coming next)" aria-label="Message">' +
+      '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" aria-hidden="true"><path d="M4 6h16v12H4V6zm0 0l8 7 8-7" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>' +
+      "</button></div>" +
+      '<div class="queue-cell queue-cell-status">' +
+      '<div class="queue-status ' +
+      statusClass +
+      '">' +
+      escapeHtml(item.status || "ACTIVE") +
+      ' <span class="queue-status-i" title="Status">i</span></div>' +
+      '<div class="queue-created"><span>Created:</span> ' +
+      escapeHtml(formatQueueDateTime(item.createdAt)) +
+      "</div></div>" +
+      '<div class="queue-cell queue-cell-flag">' +
+      '<button type="button" class="queue-flag" title="Flag (coming next)" aria-label="Flag">⚑</button></div>' +
+      '<div class="queue-cell queue-cell-sn">' +
+      '<div class="queue-serial">' +
+      queueLink(item.serial) +
+      "</div>" +
+      '<div class="queue-qty-line">Quantity: <strong>' +
+      escapeHtml(String(item.qty || 1)) +
+      "</strong></div>" +
+      '<div class="queue-qty-line">Remaining: <strong>' +
+      escapeHtml(String(item.remaining || 1)) +
+      "</strong></div></div>" +
+      '<div class="queue-cell queue-cell-body">' +
+      '<div class="queue-desc">' +
+      escapeHtml(item.description || item.second || "—") +
+      (item.itemCode ? ' <span class="queue-item-code">(' + escapeHtml(item.itemCode) + ")</span>" : "") +
+      "</div>" +
+      '<div class="queue-body-grid">' +
+      '<div class="queue-refs">' +
+      '<div class="queue-ref-col">' +
+      '<div><span class="queue-k">JOB:</span> ' +
+      queueLink(item.jobNo || "none") +
+      (item.jobNo ? " " + queueOpenTag() : "") +
+      "</div>" +
+      '<div><span class="queue-k">CST:</span> ' +
+      escapeHtml(item.customer || "—") +
+      "</div>" +
+      '<div><span class="queue-k">RIG:</span> ' +
+      escapeHtml(item.rig || "—") +
+      "</div></div>" +
+      '<div class="queue-ref-col">' +
+      '<div><span class="queue-k">EL:</span> ' +
+      queueLink(item.elNo || "none") +
+      (item.elNo ? " " + queueOpenTag() : "") +
+      "</div>" +
+      '<div><span class="queue-k">DT:</span> ' +
+      queueLink(item.dtNo || "none") +
+      (item.dtNo ? " " + queueOpenTag() : "") +
+      "</div>" +
+      '<div><span class="queue-k">RR:</span> ' +
+      queueLink(item.rrNo || "none") +
+      (item.rrNo ? " " + queueOpenTag() : "") +
+      "</div>" +
+      '<div><span class="queue-k">WO:</span> ' +
+      escapeHtml(item.wo || "none") +
+      "</div></div></div>" +
+      '<div class="queue-wi">' +
+      '<div class="queue-wi-title">Approved WI</div>' +
+      '<div>' +
+      escapeHtml(formatQueueDateTime(item.wiDate)) +
+      "</div>" +
+      '<div class="queue-wi-note">' +
+      escapeHtml(item.wiNote || "NOT APPLICABLE") +
+      "</div></div>" +
+      '<div class="queue-work">' +
+      '<div><span class="queue-k">Department:</span> ' +
+      escapeHtml(item.department || "—") +
+      ' <span class="queue-pencil" title="Edit later">✎</span></div>' +
+      '<div><span class="queue-k">Work Area:</span> ' +
+      escapeHtml(item.workArea || "—") +
+      "</div>" +
+      '<div><span class="queue-k">Category:</span> ' +
+      escapeHtml(item.routingCategory || "—") +
+      "</div>" +
+      '<div><span class="queue-k">Processing Module:</span> ' +
+      escapeHtml(item.processingModule || "—") +
+      "</div>" +
+      '<div><span class="queue-k">Processing Group:</span> ' +
+      escapeHtml(item.processingGroup || "—") +
+      "</div>" +
+      '<div><span class="queue-k">Work Instructions:</span> <span class="queue-wi-text">' +
+      escapeHtml(item.workInstructions || "—") +
+      "</span></div></div>" +
+      "</div></div></article>"
+    );
+  }
+
+  function readQueueToolbar(main, extra) {
+    var f = Object.assign(defaultQueueFilter(), state.queueFilter || {}, extra || {});
+    function v(id) {
+      var el = $("#" + id, main);
+      return el ? String(el.value || "").trim() : f[id.replace(/^q-/, "")] || "";
+    }
+    f.ageDays = parseInt(v("q-age"), 10) || 0;
+    f.store = $("#q-store", main) ? $("#q-store", main).value : f.store;
+    f.status = $("#q-status", main) ? $("#q-status", main).value : f.status;
+    f.serial = v("q-sn");
+    f.wo = v("q-wo");
+    f.job = v("q-job");
+    f.processingDoc = v("q-pdoc");
+    f.customer = v("q-cst");
+    f.rig = v("q-rig");
+    f.docRef = v("q-docs");
+    f.wiStatus = $("#q-wi", main) ? $("#q-wi", main).value : f.wiStatus;
+    f.workArea = v("q-wa");
+    f.routingCategory = v("q-cat");
+    f.description = v("q-desc");
+    f.department = v("q-dept");
+    f.workInstructions = v("q-wi-text");
+    return f;
+  }
+
+  function viewQueue(main) {
+    setBreadcrumbs([
+      { label: "Home", nav: "home" },
+      { label: "The Queue" },
+    ]);
+    if (!state.queueFilter) state.queueFilter = defaultQueueFilter();
+    var f = Object.assign(defaultQueueFilter(), state.queueFilter);
+    var all = loadQueueItems();
+
+    var countSource = filterQueueItems(
+      all,
+      Object.assign({}, f, { master: "", second: "" })
+    );
+    var masters = queueCountBy(countSource, "master");
+    var secondSource = f.master
+      ? countSource.filter(function (x) {
+          return x.master === f.master;
+        })
+      : countSource;
+    var seconds = queueCountBy(secondSource, "second");
+    var groups = QUEUE_PROCESSING_GROUPS.map(function (g) {
+      var qty = countSource.reduce(function (n, x) {
+        return n + (x.processingGroup === g ? Number(x.qty) || 1 : 0);
+      }, 0);
+      return { name: g, qty: qty };
+    });
+
+    var rows = sortQueueItems(filterQueueItems(all, f), f.sort);
+    var totalQty = rows.reduce(function (n, x) {
+      return n + (Number(x.qty) || 1);
+    }, 0);
+    var pageSize = f.viewAll ? Math.max(rows.length, 1) : QUEUE_PAGE_SIZE;
+    var pages = Math.max(1, Math.ceil(rows.length / pageSize) || 1);
+    var page = parseInt(state.queuePage, 10) || 1;
+    if (page < 1) page = 1;
+    if (page > pages) page = pages;
+    state.queuePage = page;
+    var start = (page - 1) * pageSize;
+    var pageRows = rows.slice(start, start + pageSize);
+    var shownStart = rows.length ? start + 1 : 0;
+    var shownEnd = start + pageRows.length;
+
+    var stores = [];
+    all.forEach(function (x) {
+      if (x.store && stores.indexOf(x.store) === -1) stores.push(x.store);
+    });
+    stores.sort();
+
+    var summaryHtml = "";
+    if (f.showSummary) {
+      summaryHtml =
+        '<div class="queue-summary"><div class="queue-summary-title">Queue summary</div>' +
+        '<table class="queue-summary-table"><thead><tr><th>Master</th><th>Qty</th></tr></thead><tbody>' +
+        (masters.length
+          ? masters
+              .map(function (m) {
+                return (
+                  "<tr><td>" +
+                  escapeHtml(m.name) +
+                  '</td><td class="num-cell">' +
+                  m.qty +
+                  "</td></tr>"
+                );
+              })
+              .join("")
+          : '<tr><td colspan="2">No items</td></tr>') +
+        "</tbody></table></div>";
+    }
+
+    var createdSort = f.sort === "created-desc" ? "▼" : "▲";
+
+    main.innerHTML =
+      '<div class="queue-board">' +
+      '<div class="queue-banner">The Queue</div>' +
+      '<div class="queue-filters">' +
+      '<div class="queue-filter-col">' +
+      '<label class="queue-filter-label">Master:</label>' +
+      queueSelectHtml(
+        "q-master",
+        masters.map(function (m) {
+          return m.name;
+        }),
+        f.master,
+        "All Masters"
+      ) +
+      queueListboxHtml("master", masters, f.master) +
+      "</div>" +
+      '<div class="queue-filter-col">' +
+      '<label class="queue-filter-label">Second:</label>' +
+      queueSelectHtml(
+        "q-second",
+        seconds.map(function (s) {
+          return s.name;
+        }),
+        f.second,
+        "All Seconds"
+      ) +
+      queueListboxHtml("second", seconds, f.second) +
+      "</div>" +
+      '<div class="queue-filter-col">' +
+      '<label class="queue-filter-label">Processing Group:</label>' +
+      queueSelectHtml("q-group", QUEUE_PROCESSING_GROUPS, f.processingGroup, "All Groups") +
+      queueListboxHtml("group", groups, f.processingGroup) +
+      "</div>" +
+      '<div class="queue-filter-col queue-filter-age">' +
+      '<label class="queue-filter-label" for="q-age">Age in Day(s)</label>' +
+      '<input type="number" id="q-age" class="queue-age" min="0" value="' +
+      escapeHtml(String(f.ageDays || 0)) +
+      '" />' +
+      "</div></div>" +
+      '<div class="queue-meta">' +
+      '<div><strong>' +
+      totalQty +
+      '</strong> = Total Qty. <button type="button" class="queue-text-btn" id="q-summary">Show Summary</button></div>' +
+      '<div class="queue-meta-right">Search Results — ' +
+      rows.length +
+      " Found | " +
+      shownStart +
+      " – " +
+      shownEnd +
+      " Shown" +
+      (page < pages && !f.viewAll
+        ? ' | <button type="button" class="queue-text-btn" data-queue-page="' +
+          (page + 1) +
+          '">View Next ' +
+          QUEUE_PAGE_SIZE +
+          "</button>"
+        : "") +
+      (page > 1 && !f.viewAll
+        ? ' | <button type="button" class="queue-text-btn" data-queue-page="' +
+          (page - 1) +
+          '">View Previous ' +
+          QUEUE_PAGE_SIZE +
+          "</button>"
+        : "") +
+      ' | <button type="button" class="queue-text-btn' +
+      (f.viewAll ? " is-on" : "") +
+      '" id="q-viewall">' +
+      (f.viewAll ? "View Paged" : "View All") +
+      "</button>" +
+      ' | <button type="button" class="queue-icon-btn" id="q-refresh" title="Refresh">↻</button>' +
+      ' | <button type="button" class="queue-text-btn' +
+      (f.hideUnreleased ? " is-on" : "") +
+      '" id="q-hide">' +
+      (f.hideUnreleased ? "Hide Unreleased" : "Show Unreleased") +
+      "</button></div></div>" +
+      summaryHtml +
+      '<div class="queue-toolbar">' +
+      '<div class="queue-tool queue-tool-need">' +
+      '<label>Store:</label>' +
+      queueSelectHtml("q-store", stores, f.store, "All Stores") +
+      "</div>" +
+      '<div class="queue-tool queue-tool-status">' +
+      "<label>Status:</label>" +
+      '<div class="queue-status-search">' +
+      queueSelectHtml("q-status", QUEUE_STATUSES, f.status, "ACTIVE/INACTIVE/INPROCESS") +
+      '<button type="button" class="queue-search-q" id="q-search" title="Search">Q</button></div></div>' +
+      '<div class="queue-tool queue-tool-flag"><span class="queue-col-icon" title="Add">S+</span></div>' +
+      '<div class="queue-tool queue-tool-sn"><label>S/N:</label>' +
+      '<input type="text" id="q-sn" class="queue-input" value="' +
+      escapeHtml(f.serial || "") +
+      '" /></div>' +
+      '<div class="queue-tool queue-tool-body">' +
+      '<div class="queue-tool-refs">' +
+      '<label>Work Order: <input type="text" id="q-wo" class="queue-input" value="' +
+      escapeHtml(f.wo || "") +
+      '" /></label>' +
+      '<label>Job: <input type="text" id="q-job" class="queue-input" value="' +
+      escapeHtml(f.job || "") +
+      '" /></label>' +
+      '<label>Rig: <input type="text" id="q-rig" class="queue-input" value="' +
+      escapeHtml(f.rig || "") +
+      '" /></label>' +
+      '<label>Processing Doc: <input type="text" id="q-pdoc" class="queue-input" value="' +
+      escapeHtml(f.processingDoc || "") +
+      '" /></label>' +
+      '<label>Customer: <input type="text" id="q-cst" class="queue-input" value="' +
+      escapeHtml(f.customer || "") +
+      '" /></label>' +
+      '<label>EL, DT, MT, PO, RR: <input type="text" id="q-docs" class="queue-input" value="' +
+      escapeHtml(f.docRef || "") +
+      '" /></label></div>' +
+      '<div class="queue-tool-wi"><label>WI Status/QA:</label>' +
+      queueSelectHtml("q-wi", QUEUE_WI_STATUSES, f.wiStatus, "All") +
+      "</div>" +
+      '<div class="queue-tool-work">' +
+      '<label>Work Area: <input type="text" id="q-wa" class="queue-input" value="' +
+      escapeHtml(f.workArea || "") +
+      '" /></label>' +
+      '<label>Description: <input type="text" id="q-desc" class="queue-input" value="' +
+      escapeHtml(f.description || "") +
+      '" /></label>' +
+      '<label>Work Instructions: <input type="text" id="q-wi-text" class="queue-input" value="' +
+      escapeHtml(f.workInstructions || "") +
+      '" /></label>' +
+      '<label>Routing Category: <input type="text" id="q-cat" class="queue-input" value="' +
+      escapeHtml(f.routingCategory || "") +
+      '" /></label>' +
+      '<label>Department: <input type="text" id="q-dept" class="queue-input" value="' +
+      escapeHtml(f.department || "") +
+      '" /></label></div></div></div>' +
+      '<div class="queue-colheads">' +
+      '<button type="button" class="queue-colhead" id="q-sort-need">Need Date <span class="queue-pencil">✎</span></button>' +
+      '<button type="button" class="queue-colhead" id="q-sort-created">Date Created ' +
+      createdSort +
+      "</button>" +
+      '<div class="queue-colhead queue-colhead-flag"></div>' +
+      '<div class="queue-colhead">S/N</div>' +
+      '<div class="queue-colhead queue-colhead-body"></div></div>' +
+      '<div class="queue-list">' +
+      (pageRows.length
+        ? pageRows.map(renderQueueItem).join("")
+        : '<div class="queue-empty">No items in The Queue match the current filters.</div>') +
+      "</div></div>";
+
+    function apply(extra, resetPage) {
+      state.queueFilter = readQueueToolbar(main, extra || {});
+      if (resetPage) state.queuePage = 1;
+      viewQueue(main);
+    }
+
+    var masterSel = $("#q-master", main);
+    if (masterSel) {
+      masterSel.addEventListener("change", function () {
+        apply({ master: masterSel.value, second: "" }, true);
+      });
+    }
+    var secondSel = $("#q-second", main);
+    if (secondSel) {
+      secondSel.addEventListener("change", function () {
+        apply({ second: secondSel.value }, true);
+      });
+    }
+    var groupSel = $("#q-group", main);
+    if (groupSel) {
+      groupSel.addEventListener("change", function () {
+        apply({ processingGroup: groupSel.value }, true);
+      });
+    }
+    $$(".queue-list-item", main).forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        var kind = btn.getAttribute("data-kind");
+        var value = btn.getAttribute("data-value") || "";
+        var cur = f[kind === "group" ? "processingGroup" : kind] || "";
+        var next = cur === value ? "" : value;
+        if (kind === "master") apply({ master: next, second: "" }, true);
+        else if (kind === "second") apply({ second: next }, true);
+        else if (kind === "group") apply({ processingGroup: next }, true);
+      });
+    });
+    var age = $("#q-age", main);
+    if (age) {
+      age.addEventListener("change", function () {
+        apply({ ageDays: parseInt(age.value, 10) || 0 }, true);
+      });
+    }
+    var searchBtn = $("#q-search", main);
+    if (searchBtn) {
+      searchBtn.addEventListener("click", function () {
+        apply({}, true);
+      });
+    }
+    $$(".queue-input", main).forEach(function (inp) {
+      inp.addEventListener("keydown", function (e) {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          apply({}, true);
+        }
+      });
+    });
+    ["q-store", "q-status", "q-wi"].forEach(function (id) {
+      var el = $("#" + id, main);
+      if (el) {
+        el.addEventListener("change", function () {
+          apply({}, true);
+        });
+      }
+    });
+    var hideBtn = $("#q-hide", main);
+    if (hideBtn) {
+      hideBtn.addEventListener("click", function () {
+        apply({ hideUnreleased: !f.hideUnreleased }, true);
+      });
+    }
+    var viewAllBtn = $("#q-viewall", main);
+    if (viewAllBtn) {
+      viewAllBtn.addEventListener("click", function () {
+        apply({ viewAll: !f.viewAll }, true);
+      });
+    }
+    var sumBtn = $("#q-summary", main);
+    if (sumBtn) {
+      sumBtn.addEventListener("click", function () {
+        apply({ showSummary: !f.showSummary }, false);
+      });
+    }
+    var refreshBtn = $("#q-refresh", main);
+    if (refreshBtn) {
+      refreshBtn.addEventListener("click", function () {
+        apply({}, false);
+      });
+    }
+    $$("[data-queue-page]", main).forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        state.queueFilter = readQueueToolbar(main);
+        state.queuePage = parseInt(btn.getAttribute("data-queue-page"), 10) || 1;
+        viewQueue(main);
+        window.scrollTo(0, 0);
+      });
+    });
+    var sortCreated = $("#q-sort-created", main);
+    if (sortCreated) {
+      sortCreated.addEventListener("click", function () {
+        apply({ sort: f.sort === "created-asc" ? "created-desc" : "created-asc" }, true);
+      });
+    }
+    var sortNeed = $("#q-sort-need", main);
+    if (sortNeed) {
+      sortNeed.addEventListener("click", function () {
+        apply({ sort: f.sort === "need-asc" ? "need-desc" : "need-asc" }, true);
+      });
+    }
+    $$("[data-nav]", main).forEach(function (b) {
+      b.addEventListener("click", function () {
+        navigate(b.getAttribute("data-nav"));
+      });
+    });
   }
 
   /* ========================================================================
@@ -5540,11 +6685,8 @@
       '<div class="cardex-home-titles">' +
       '<p class="cardex-kicker">CARDEX</p>' +
       '<h1 class="page-title">Inventory</h1>' +
-      '<nav class="cardex-subnav" aria-label="Inventory links">' +
-      '<button type="button" class="cardex-subnav-link" data-nav="home">Home</button>' +
-      '<span class="cardex-subnav-sep">|</span>' +
-      '<button type="button" class="cardex-subnav-link" id="cardex-link-util" title="Coming soon">Daily Utilization</button>' +
-      "</nav></div>" +
+      renderCardexSubnav("cardex") +
+      "</div>" +
       "</div>" +
       '<div class="cardex-split">' +
       /* LEFT — Serial Number Lookup */
@@ -5787,13 +6929,6 @@
       navigate("cardex-results");
     });
 
-    var util = $("#cardex-link-util", main);
-    if (util) {
-      util.addEventListener("click", function () {
-        toast("Daily Utilization — not built yet", "info");
-      });
-    }
-
     $$("[data-nav]", main).forEach(function (b) {
       b.addEventListener("click", function () {
         navigate(b.getAttribute("data-nav"));
@@ -5809,6 +6944,716 @@
       var f = $(".sn-input", main);
       if (f) f.focus();
     }
+  }
+
+  function renderCardexSubnav(active) {
+    function link(route, label, key) {
+      return (
+        '<button type="button" class="cardex-subnav-link' +
+        (active === key ? " is-active" : "") +
+        '" data-nav="' +
+        route +
+        '">' +
+        label +
+        "</button>"
+      );
+    }
+    return (
+      '<nav class="cardex-subnav" aria-label="Inventory links">' +
+      link("home", "Home", "home") +
+      '<span class="cardex-subnav-sep">|</span>' +
+      link("cardex", "Cardex", "cardex") +
+      '<span class="cardex-subnav-sep">|</span>' +
+      link("cardex-util", "Daily Utilization", "util") +
+      "</nav>"
+    );
+  }
+
+  /* ========================================================================
+   * Daily Utilization — factual counts from Serial Number master + DT history
+   * ======================================================================== */
+  function defaultUtilFilter() {
+    return {
+      store: "",
+      master: "",
+      second: "",
+      minor: "",
+      period: "current",
+      start: "",
+      end: "",
+      showNewOnly: false,
+      submitted: true,
+    };
+  }
+
+  function utilIsoDay(v) {
+    if (!v) return "";
+    var s = String(v);
+    if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+    var d = new Date(s);
+    if (isNaN(d.getTime())) return "";
+    var m = String(d.getMonth() + 1).padStart(2, "0");
+    var day = String(d.getDate()).padStart(2, "0");
+    return d.getFullYear() + "-" + m + "-" + day;
+  }
+
+  function utilDayNum(iso) {
+    var p = String(iso || "").slice(0, 10).split("-");
+    if (p.length !== 3) return NaN;
+    return Date.UTC(parseInt(p[0], 10), parseInt(p[1], 10) - 1, parseInt(p[2], 10)) / 86400000;
+  }
+
+  function utilOverlapDays(a1, a2, b1, b2) {
+    if (!a1 || !a2 || !b1 || !b2) return 0;
+    var s = a1 > b1 ? a1 : b1;
+    var e = a2 < b2 ? a2 : b2;
+    if (s > e) return 0;
+    var n = utilDayNum(e) - utilDayNum(s);
+    if (isNaN(n)) return 0;
+    return n + 1;
+  }
+
+  function utilShiftDay(iso, days) {
+    var n = utilDayNum(iso);
+    if (isNaN(n)) return iso;
+    var d = new Date((n + days) * 86400000);
+    var m = String(d.getUTCMonth() + 1).padStart(2, "0");
+    var day = String(d.getUTCDate()).padStart(2, "0");
+    return d.getUTCFullYear() + "-" + m + "-" + day;
+  }
+
+  function utilDtOnRentStart(dt) {
+    if (!dt) return "";
+    return dt.shipDate || dt.onRentDate || dt.createdAt || "";
+  }
+
+  function utilRrHasSerial(r, serial) {
+    if (!r || !serial) return false;
+    var key = String(serial).trim().toUpperCase();
+    var hit = false;
+    (r.serials || []).forEach(function (s) {
+      var sn = typeof s === "string" ? s : s && (s.serial || s.serialNumber);
+      if (String(sn || "").toUpperCase() === key) hit = true;
+    });
+    (r.lines || []).forEach(function (ln) {
+      if (!ln) return;
+      if (String(ln.serial || ln.serialNumber || "").toUpperCase() === key) hit = true;
+    });
+    return hit;
+  }
+
+  /** Return date is the receiving ticket only — never DT completedAt (that is issue, not return). */
+  function utilRrDateForSerialOnDt(dt, serial) {
+    if (!dt || !serial) return { at: "", rrLabel: "" };
+    var key = String(serial).trim().toUpperCase();
+    var rec =
+      (dt.receivedSerials && (dt.receivedSerials[key] || dt.receivedSerials[serial])) || null;
+    var at = rec && rec.at ? rec.at : "";
+    var rrLabel = rec && rec.rrLabel ? String(rec.rrLabel) : "";
+    getRrsForDt(dt.dtNo || dt.id).forEach(function (r) {
+      if (!utilRrHasSerial(r, serial)) return;
+      var when = r.createdAt || r.returnDate || "";
+      if (!when) return;
+      if (!at || utilIsoDay(when) < utilIsoDay(at)) {
+        at = when;
+        rrLabel = String(r.rrLabel || r.rrNo || rrLabel);
+      } else if (!rrLabel) {
+        rrLabel = String(r.rrLabel || r.rrNo || "");
+      }
+    });
+    return { at: at, rrLabel: rrLabel };
+  }
+
+  function buildUtilOutIndex() {
+    var bySerial = {};
+    function add(sn, start, end, kind, extra) {
+      var k = String(sn || "").trim().toUpperCase();
+      if (!k) return;
+      var s = utilIsoDay(start);
+      if (!s) return;
+      var open = !end;
+      var e = utilIsoDay(end) || todayISO();
+      if (e < s) e = s;
+      extra = extra || {};
+      if (!bySerial[k]) bySerial[k] = [];
+      bySerial[k].push({
+        start: s,
+        end: e,
+        open: open,
+        kind: kind || "rent",
+        dtNo: extra.dtNo || "",
+        rrLabel: extra.rrLabel || "",
+        days: utilOverlapDays(s, e, s, e),
+      });
+    }
+    loadDts().forEach(function (dt) {
+      if (!dt) return;
+      var start = utilDtOnRentStart(dt);
+      var kind = (dt.destType || "") === "vendor" ? "vendor" : "rent";
+      var dtNo = formatDtNo(dt.dtNo || dt.id);
+      dtAllSerials(dt).forEach(function (sn) {
+        var rr = utilRrDateForSerialOnDt(dt, sn);
+        add(sn, start, rr.at, kind, { dtNo: dtNo, rrLabel: rr.rrLabel });
+      });
+    });
+    return bySerial;
+  }
+
+  function utilIntervals(index, serial) {
+    if (!index) return [];
+    return index[String(serial || "").trim().toUpperCase()] || [];
+  }
+
+  function utilWasOutInRange(serial, index, start, end, kind) {
+    var hits = utilIntervals(index, serial);
+    var a = start || "0000-01-01";
+    var b = end || todayISO();
+    for (var i = 0; i < hits.length; i++) {
+      if (kind && hits[i].kind !== kind) continue;
+      if (utilOverlapDays(hits[i].start, hits[i].end, a, b) > 0) return true;
+    }
+    return false;
+  }
+
+  function utilIsCurrentlyOnRent(serial, index) {
+    return utilIntervals(index, serial).some(function (iv) {
+      return iv.kind === "rent" && iv.open;
+    });
+  }
+
+  function utilIsCurrentlyAtVendor(serial, index) {
+    return utilIntervals(index, serial).some(function (iv) {
+      return iv.kind === "vendor" && iv.open;
+    });
+  }
+
+  function utilAvgOutCount(serials, index, windowStart, windowEnd) {
+    if (!serials || !serials.length) return 0;
+    var span = utilOverlapDays(windowStart, windowEnd, windowStart, windowEnd);
+    if (!span) return 0;
+    var total = 0;
+    serials.forEach(function (sn) {
+      utilIntervals(index, sn).forEach(function (iv) {
+        if (iv.kind && iv.kind !== "rent") return;
+        total += utilOverlapDays(iv.start, iv.end, windowStart, windowEnd);
+      });
+    });
+    return total / span;
+  }
+
+  function utilIsNewAsset(asset) {
+    var blob = String(asset.condition || "") + " " + String(asset.lastInspectionStatus || "");
+    if (/\bnew\b/i.test(blob)) return true;
+    if (asset.dateInService) return false;
+    var purchased = utilIsoDay(asset.datePurchased);
+    if (!purchased) return false;
+    var cutoff = utilShiftDay(todayISO(), -90);
+    return purchased >= cutoff;
+  }
+
+  function utilClassifyAsset(asset, index, f) {
+    var sn = asset.serial;
+    var vendorNow = utilIsCurrentlyAtVendor(sn, index);
+    var onRent = false;
+    if (!f || f.period !== "range") {
+      onRent = utilIsCurrentlyOnRent(sn, index);
+      if (!onRent && !vendorNow && serialIsCurrentlyOut(sn)) onRent = true;
+    } else {
+      onRent = utilWasOutInRange(sn, index, f.start, f.end, "rent");
+    }
+    if (onRent) return "working";
+    if (vendorNow) return "inspection";
+    if (asset.retirementDate) return "nr";
+    var blob = [
+      asset.condition,
+      asset.lastInspectionStatus,
+      asset.notes,
+    ]
+      .join(" ")
+      .toLowerCase();
+    if (/\b(inspect|repair|in shop|machine shop)\b/.test(blob)) return "inspection";
+    if (/\b(n\/r|not ready|non-?ready|condemned|scrap|unserviceable|damaged)\b/.test(blob)) return "nr";
+    if (/\bhold\b/.test(blob)) return "hold";
+    if (/\bexcess\b/.test(blob)) return "excess";
+    if (utilIsNewAsset(asset)) return "new";
+    return "available";
+  }
+
+  function utilEmptyCounts() {
+    return {
+      total: 0,
+      working: 0,
+      available: 0,
+      inspection: 0,
+      nr: 0,
+      neu: 0,
+      hold: 0,
+      excess: 0,
+      serials: [],
+      notes: [],
+      windows: [],
+    };
+  }
+
+  function utilFormatWindow(w) {
+    if (!w) return "";
+    var dtBit = (w.dtNo ? "DT " + formatDtNo(w.dtNo) + " " : "") + formatDate(w.start);
+    if (w.open) return dtBit + " → still out";
+    var rrBit = (w.rrLabel ? "RR " + w.rrLabel + " " : "") + formatDate(w.end);
+    return dtBit + " → " + rrBit;
+  }
+
+  function utilAddAsset(counts, asset, bucket, windows) {
+    counts.total += 1;
+    if (bucket === "working") counts.working += 1;
+    else if (bucket === "available") counts.available += 1;
+    else if (bucket === "inspection") counts.inspection += 1;
+    else if (bucket === "nr") counts.nr += 1;
+    else if (bucket === "new") counts.neu += 1;
+    else if (bucket === "hold") counts.hold += 1;
+    else if (bucket === "excess") counts.excess += 1;
+    else counts.available += 1;
+    if (asset && asset.serial) counts.serials.push(asset.serial);
+    var note = String((asset && asset.notes) || "").trim();
+    if (note && counts.notes.indexOf(note) === -1) counts.notes.push(note);
+    (windows || []).forEach(function (w) {
+      if (w && w.kind === "rent") counts.windows.push(w);
+    });
+  }
+
+  function utilPct(working, total) {
+    if (!total) return "0.00%";
+    return ((working / total) * 100).toFixed(2) + "%";
+  }
+
+  function utilFmtAvg(n) {
+    return (Number(n) || 0).toFixed(2);
+  }
+
+  function utilOptionList(values, selected, allLabel) {
+    var html = '<option value="">' + escapeHtml(allLabel) + "</option>";
+    (values || []).forEach(function (v) {
+      html +=
+        '<option value="' +
+        escapeHtml(v) +
+        '"' +
+        (selected === v ? " selected" : "") +
+        ">" +
+        escapeHtml(v) +
+        "</option>";
+    });
+    return html;
+  }
+
+  function utilUniqueFromAssets(assets, getter) {
+    var seen = {};
+    var out = [];
+    (assets || []).forEach(function (a) {
+      var v = String(getter(a) || "").trim();
+      if (!v || seen[v]) return;
+      seen[v] = true;
+      out.push(v);
+    });
+    out.sort(function (a, b) {
+      return a.localeCompare(b, undefined, { sensitivity: "base" });
+    });
+    return out;
+  }
+
+  function utilComment(counts) {
+    if (counts && counts.windows && counts.windows.length) {
+      var seen = {};
+      var parts = [];
+      counts.windows.forEach(function (w) {
+        var txt = utilFormatWindow(w);
+        if (!txt || seen[txt]) return;
+        seen[txt] = true;
+        parts.push(txt);
+      });
+      if (parts.length > 3) {
+        return parts.slice(0, 3).join("; ") + " … +" + (parts.length - 3);
+      }
+      if (parts.length) return parts.join("; ");
+    }
+    if (!counts || !counts.notes || !counts.notes.length) return "";
+    if (counts.notes.length === 1) return counts.notes[0];
+    return counts.notes.length + " notes";
+  }
+
+  function utilMergeCounts(into, from) {
+    if (!from) return into;
+    into.total += from.total || 0;
+    into.working += from.working || 0;
+    into.available += from.available || 0;
+    into.inspection += from.inspection || 0;
+    into.nr += from.nr || 0;
+    into.neu += from.neu || 0;
+    into.hold += from.hold || 0;
+    into.excess += from.excess || 0;
+    into.serials = (into.serials || []).concat(from.serials || []);
+    into.windows = (into.windows || []).concat(from.windows || []);
+    (from.notes || []).forEach(function (n) {
+      if (n && into.notes.indexOf(n) === -1) into.notes.push(n);
+    });
+    return into;
+  }
+
+  function viewCardexUtil(main) {
+    setBreadcrumbs([
+      { label: "Home", nav: "home" },
+      { label: "Inventory", nav: "cardex" },
+      { label: "Daily Utilization" },
+    ]);
+    if (!state.utilFilter) state.utilFilter = defaultUtilFilter();
+    var f = Object.assign(defaultUtilFilter(), state.utilFilter);
+    var catalog = getCardexCatalog();
+    var index = buildUtilOutIndex();
+    var yearStart = utilShiftDay(todayISO(), -364);
+    var yearEnd = todayISO();
+    var mastersData = loadMasters();
+    var masterCats = uniqStrings(mastersData.categories || []);
+    var catSet = {};
+    masterCats.forEach(function (c) {
+      catSet[c] = true;
+    });
+    var descByCat = {};
+    masterCats.forEach(function (c) {
+      descByCat[c] = getDescriptionsForCategory(c);
+    });
+    function descAllowed(cat, desc) {
+      var list = descByCat[cat] || [];
+      var d = String(desc || "").trim();
+      if (!d) return false;
+      if (list.indexOf(d) !== -1) return true;
+      var dl = d.toLowerCase();
+      return list.some(function (x) {
+        return String(x).toLowerCase() === dl;
+      });
+    }
+    function onMasterList(a) {
+      var cat = String(a.category || "").trim();
+      var desc = String(a.description || "").trim();
+      if (!cat || !desc || !catSet[cat]) return false;
+      return descAllowed(cat, desc);
+    }
+
+    function inStore(a) {
+      if (!f.store) return true;
+      var loc = a.store || a.location || "";
+      return loc === f.store;
+    }
+    var listed = catalog.filter(onMasterList);
+    var storePool = listed.filter(inStore);
+    var stores = uniqStrings(
+      (mastersData.locations || []).concat(
+        utilUniqueFromAssets(listed, function (a) {
+          return a.store || a.location || "";
+        })
+      )
+    );
+    var masters = masterCats.slice();
+    var seconds = f.master
+      ? (descByCat[f.master] || []).slice()
+      : uniqStrings(
+          masterCats.reduce(function (acc, c) {
+            return acc.concat(descByCat[c] || []);
+          }, [])
+        );
+    var minorPool = storePool.filter(function (a) {
+      if (f.master && a.category !== f.master) return false;
+      if (f.second && a.description !== f.second) return false;
+      return true;
+    });
+    var minors = utilUniqueFromAssets(minorPool, function (a) {
+      return a.itemNo || "";
+    });
+
+    var filtered = listed.filter(function (a) {
+      if (!inStore(a)) return false;
+      if (f.master && a.category !== f.master) return false;
+      if (f.second && a.description !== f.second) return false;
+      if (f.minor && String(a.itemNo || "") !== f.minor) return false;
+      return true;
+    });
+
+    var classified = filtered.map(function (a) {
+      var bucket = utilClassifyAsset(a, index, f);
+      return { asset: a, bucket: bucket };
+    });
+    if (f.showNewOnly) {
+      classified = classified.filter(function (row) {
+        return row.bucket === "new" || utilIsNewAsset(row.asset);
+      });
+    }
+
+    var groups = [];
+    var groupMap = {};
+    classified.forEach(function (row) {
+      var a = row.asset;
+      var master = a.category || "(No master category)";
+      var second = a.description || "(No description)";
+      var minor = String(a.itemNo || "").trim() || "—";
+      var loc = a.store || a.location || "—";
+      var key = master + "\0" + second + "\0" + minor + "\0" + loc;
+      if (!groupMap[key]) {
+        groupMap[key] = {
+          master: master,
+          second: second,
+          minor: minor,
+          location: loc,
+          counts: utilEmptyCounts(),
+        };
+        groups.push(groupMap[key]);
+      }
+      utilAddAsset(
+        groupMap[key].counts,
+        a,
+        row.bucket,
+        utilIntervals(index, a.serial)
+      );
+    });
+    groups.sort(function (a, b) {
+      return (
+        a.master.localeCompare(b.master, undefined, { sensitivity: "base" }) ||
+        a.second.localeCompare(b.second, undefined, { sensitivity: "base" }) ||
+        a.minor.localeCompare(b.minor, undefined, { sensitivity: "base" }) ||
+        a.location.localeCompare(b.location, undefined, { sensitivity: "base" })
+      );
+    });
+
+    function countsRowHtml(labelMinor, location, description, counts, rowClass, serials) {
+      var avg = utilAvgOutCount(counts.serials, index, yearStart, yearEnd);
+      var serialAttr = (serials || counts.serials || []).join(",");
+      return (
+        '<tr class="' +
+        rowClass +
+        '" data-util-serials="' +
+        escapeHtml(serialAttr) +
+        '">' +
+        '<td class="mono">' +
+        escapeHtml(labelMinor) +
+        "</td>" +
+        "<td>" +
+        escapeHtml(location || "") +
+        "</td>" +
+        '<td class="wrap-cell">' +
+        escapeHtml(description) +
+        "</td>" +
+        '<td class="num-cell">' +
+        counts.total +
+        "</td>" +
+        '<td class="num-cell util-working">' +
+        counts.working +
+        "</td>" +
+        '<td class="num-cell">' +
+        counts.available +
+        "</td>" +
+        '<td class="num-cell">' +
+        utilPct(counts.working, counts.total) +
+        "</td>" +
+        '<td class="num-cell">' +
+        counts.inspection +
+        "</td>" +
+        '<td class="num-cell">' +
+        counts.nr +
+        "</td>" +
+        '<td class="num-cell">' +
+        counts.neu +
+        "</td>" +
+        '<td class="num-cell">' +
+        counts.hold +
+        "</td>" +
+        '<td class="num-cell">' +
+        counts.excess +
+        "</td>" +
+        '<td class="num-cell">' +
+        utilFmtAvg(avg) +
+        "</td></tr>"
+      );
+    }
+
+    var body = groups
+      .map(function (g) {
+        return countsRowHtml(g.minor, g.location, g.second, g.counts, "util-detail");
+      })
+      .join("");
+
+    var periodHint =
+      f.period === "range" && f.start && f.end
+        ? "On rent anytime " + formatDate(f.start) + " – " + formatDate(f.end) + " (DT ship → RR return)"
+        : "Currently on rent = customer DT with no receiving report yet";
+
+    main.innerHTML =
+      '<div class="util-page">' +
+      '<div class="util-head">' +
+      "<div>" +
+      '<p class="cardex-kicker">CARDEX</p>' +
+      '<h1 class="page-title">Daily Utilization Report</h1>' +
+      renderCardexSubnav("util") +
+      '<p class="page-subtitle">Serials on the Master category and Description lists only — ' +
+      escapeHtml(periodHint) +
+      ". 1-yr avg out is the average number of these serials on rent per day over the last 365 days.</p>" +
+      "</div></div>" +
+      '<form class="util-filters" id="util-form">' +
+      '<label class="util-field"><span>Store</span><select id="util-store" class="form-control">' +
+      utilOptionList(stores, f.store, "ALL") +
+      "</select></label>" +
+      '<label class="util-field"><span>Master</span><select id="util-master" class="form-control">' +
+      utilOptionList(masters, f.master, "ALL") +
+      "</select></label>" +
+      '<label class="util-field util-field-wide"><span>Second</span><select id="util-second" class="form-control">' +
+      utilOptionList(seconds, f.second, "ALL") +
+      "</select></label>" +
+      '<label class="util-field"><span>Minor</span><select id="util-minor" class="form-control">' +
+      utilOptionList(minors, f.minor, "ALL") +
+      "</select></label>" +
+      '<label class="util-field"><span>Period</span><select id="util-period" class="form-control">' +
+      '<option value="current"' +
+      (f.period !== "range" ? " selected" : "") +
+      ">Currently</option>" +
+      '<option value="range"' +
+      (f.period === "range" ? " selected" : "") +
+      ">Date range</option></select></label>" +
+      '<label class="util-field util-range"' +
+      (f.period === "range" ? "" : " hidden") +
+      '><span>From</span><input type="date" id="util-start" class="form-control" value="' +
+      escapeHtml(f.start || "") +
+      '" /></label>' +
+      '<label class="util-field util-range"' +
+      (f.period === "range" ? "" : " hidden") +
+      '><span>To</span><input type="date" id="util-end" class="form-control" value="' +
+      escapeHtml(f.end || "") +
+      '" /></label>' +
+      '<div class="util-field util-submit-wrap"><span>&nbsp;</span>' +
+      '<button type="submit" class="btn btn-primary" id="util-submit">Submit</button></div>' +
+      "</form>" +
+      '<div class="util-checks">' +
+      '<label class="util-check"><input type="checkbox" id="util-new-only"' +
+      (f.showNewOnly ? " checked" : "") +
+      " /> Show only new assets</label>" +
+      "</div>" +
+      '<div class="table-wrap util-table-wrap"><table class="table util-table"><thead><tr>' +
+      "<th>Minor</th><th>Location</th><th>Description</th>" +
+      "<th>Total assets</th><th>Assets working</th><th>Available</th><th>% Working</th>" +
+      "<th>Inspection / repair</th><th>N/R</th><th>New</th><th>Hold</th><th>Excess</th>" +
+      "<th>1 yr avg out</th>" +
+      "</tr></thead><tbody>" +
+      (body ||
+        '<tr><td colspan="13" class="table-empty">No serials match the Master category / Description lists for these filters.</td></tr>') +
+      "</tbody></table></div>" +
+      '<p class="util-legend">Working = on a customer delivery ticket that has not been returned on a receiving report. Days on rent run from the DT ship date to the RR date (or today if still out). Vendor DTs count as inspection / repair, not utilization. Click a row to open those serials in Cardex.</p>' +
+      "</div>";
+
+    function readFilter(extra) {
+      var next = Object.assign(defaultUtilFilter(), f, extra || {});
+      next.store = $("#util-store", main) ? $("#util-store", main).value : next.store;
+      next.master = $("#util-master", main) ? $("#util-master", main).value : next.master;
+      next.second = $("#util-second", main) ? $("#util-second", main).value : next.second;
+      next.minor = $("#util-minor", main) ? $("#util-minor", main).value : next.minor;
+      next.period = $("#util-period", main) ? $("#util-period", main).value : next.period;
+      next.start = $("#util-start", main) ? $("#util-start", main).value : next.start;
+      next.end = $("#util-end", main) ? $("#util-end", main).value : next.end;
+      next.showNewOnly = $("#util-new-only", main) ? $("#util-new-only", main).checked : next.showNewOnly;
+      return next;
+    }
+
+    function apply(extra, resetChildren) {
+      var next = readFilter(extra);
+      if (resetChildren === "master") {
+        next.second = "";
+        next.minor = "";
+      } else if (resetChildren === "second") {
+        next.minor = "";
+      }
+      if (next.period === "range") {
+        if (!next.start || !next.end) {
+          toast("Choose a From and To date for the range", "error");
+          return;
+        }
+        if (next.start > next.end) {
+          toast("From date must be on or before To date", "error");
+          return;
+        }
+      }
+      state.utilFilter = next;
+      viewCardexUtil(main);
+    }
+
+    var form = $("#util-form", main);
+    if (form) {
+      form.addEventListener("submit", function (e) {
+        e.preventDefault();
+        apply({}, false);
+      });
+    }
+    var storeSel = $("#util-store", main);
+    if (storeSel) {
+      storeSel.addEventListener("change", function () {
+        apply({}, false);
+      });
+    }
+    var masterSel = $("#util-master", main);
+    if (masterSel) {
+      masterSel.addEventListener("change", function () {
+        apply({}, "master");
+      });
+    }
+    var secondSel = $("#util-second", main);
+    if (secondSel) {
+      secondSel.addEventListener("change", function () {
+        apply({}, "second");
+      });
+    }
+    var periodSel = $("#util-period", main);
+    if (periodSel) {
+      periodSel.addEventListener("change", function () {
+        var range = periodSel.value === "range";
+        $$(".util-range", main).forEach(function (el) {
+          if (range) el.removeAttribute("hidden");
+          else el.setAttribute("hidden", "");
+        });
+        if (range) {
+          if (!$("#util-start", main).value) $("#util-start", main).value = todayISO();
+          if (!$("#util-end", main).value) $("#util-end", main).value = todayISO();
+        }
+      });
+    }
+    ["util-new-only"].forEach(function (id) {
+      var el = $("#" + id, main);
+      if (el) {
+        el.addEventListener("change", function () {
+          apply({}, false);
+        });
+      }
+    });
+    $$("[data-nav]", main).forEach(function (b) {
+      b.addEventListener("click", function () {
+        navigate(b.getAttribute("data-nav"));
+      });
+    });
+    $$("[data-util-serials]", main).forEach(function (row) {
+      row.addEventListener("click", function () {
+        var raw = row.getAttribute("data-util-serials") || "";
+        var serials = raw.split(",").map(function (s) {
+          return s.trim();
+        }).filter(Boolean);
+        if (!serials.length) return;
+        var seen = {};
+        var results = [];
+        serials.forEach(function (s) {
+          var k = s.toUpperCase();
+          if (seen[k]) return;
+          seen[k] = true;
+          results.push({ query: s, record: findCardexRecord(s) });
+        });
+        state.cardexResults = {
+          mode: "serial",
+          title: "Daily Utilization serials",
+          results: results,
+        };
+        navigate("cardex-results");
+      });
+    });
   }
 
   function renderCardexSerialChips(main) {
@@ -17821,6 +19666,11 @@
     try {
       repairInvalidVendorDtsWhileSerialOut();
     } catch (eRep) {}
+    try {
+      ensureUtilReferenceRentHistory();
+    } catch (eUtil) {
+      console.error("[AtraOps] util rent history seed failed", eUtil);
+    }
     seedJobsIfNeeded();
     seedDocsNcrIfNeeded();
     bindChrome();
